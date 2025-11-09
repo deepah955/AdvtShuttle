@@ -1,13 +1,16 @@
 import React, { useState } from 'react';
-import { Alert, StyleSheet, Text, TextInput, TouchableOpacity, View, ScrollView, Image } from 'react-native';
+import { Alert, StyleSheet, Text, TextInput, TouchableOpacity, View, ScrollView, Image, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Link, router, useLocalSearchParams } from 'expo-router';
 import { Mail, Lock, User, Phone, Camera } from 'lucide-react-native';
 import * as ImagePicker from 'expo-image-picker';
+import { signUp, signIn } from '@/services/auth';
+import { uploadProfilePhoto } from '@/utils/imageUtils';
 
 export default function AuthScreen() {
   const { type } = useLocalSearchParams<{ type: 'rider' | 'driver' }>();
   const [activeTab, setActiveTab] = useState<'login' | 'signup'>('login');
+  const [loading, setLoading] = useState(false);
   const [form, setForm] = useState({
     name: '',
     email: '',
@@ -15,6 +18,8 @@ export default function AuthScreen() {
     confirmPassword: '',
     employeeId: '',
     phone: '',
+    vehicleNo: '',
+    registrationNumber: '',
     photo: null as string | null,
   });
 
@@ -23,50 +28,199 @@ export default function AuthScreen() {
   };
 
   const pickImage = async () => {
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== 'granted') {
-      Alert.alert('Permission needed', 'Camera roll permissions are required to select a photo.');
-      return;
-    }
+    try {
+      // Request permissions
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert(
+          'Permission Required', 
+          'Camera roll permissions are required to select a photo. Please enable permissions in your device settings.',
+          [{ text: 'OK' }]
+        );
+        return;
+      }
 
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.8,
-    });
+      // Launch image picker with optimized settings
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.7, // Reduced quality for smaller file size
+        allowsMultipleSelection: false,
+        selectionLimit: 1,
+      });
 
-    if (!result.canceled) {
-      handleInputChange('photo', result.assets[0].uri);
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        const asset = result.assets[0];
+        
+        // Validate file size (approximate)
+        if (asset.fileSize && asset.fileSize > 5 * 1024 * 1024) {
+          Alert.alert(
+            'File Too Large',
+            'Please select an image smaller than 5MB.',
+            [{ text: 'OK' }]
+          );
+          return;
+        }
+
+        console.log('Image selected:', asset.uri);
+        handleInputChange('photo', asset.uri);
+      }
+    } catch (error: any) {
+      console.error('Image picker error:', error);
+      Alert.alert(
+        'Error',
+        'Failed to select image. Please try again.',
+        [{ text: 'OK' }]
+      );
     }
   };
 
-  const handleSubmit = () => {
-    console.log(`Submitting ${activeTab} for ${type}`, form);
-    if (activeTab === 'signup') {
-      if (type === 'rider' && !form.email.includes('@vit')) {
-        Alert.alert('Error', 'Please use a VIT email');
-        return;
-      }
-      if (form.password !== form.confirmPassword) {
-        Alert.alert('Error', 'Passwords do not match');
-        return;
-      }
-      if (type === 'driver' && (!form.employeeId || !form.photo)) {
-        Alert.alert('Error', 'Employee ID and photo are required for drivers');
-        return;
-      }
-      // Mock signup - navigate to OTP
-      router.push(`/otp?type=${type}`);
-    } else {
-      // Mock login
-      if (type === 'rider' && form.email.includes('@vit') && form.password.length > 0) {
-        router.replace('/rider-onboarding');
-      } else if (type === 'driver' && form.email && form.password.length > 0) {
-        router.replace('/driver-onboarding');
+  const handleSubmit = async () => {
+    if (loading) return;
+
+    try {
+      setLoading(true);
+
+      if (activeTab === 'signup') {
+        // Validation
+        if (!form.name || !form.email || !form.password) {
+          Alert.alert('Error', 'Please fill in all required fields');
+          return;
+        }
+
+        if (type === 'rider' && !form.email.includes('@vit')) {
+          Alert.alert('Error', 'Please use a VIT email address');
+          return;
+        }
+
+        if (form.password.length < 6) {
+          Alert.alert('Error', 'Password must be at least 6 characters');
+          return;
+        }
+
+        if (form.password !== form.confirmPassword) {
+          Alert.alert('Error', 'Passwords do not match');
+          return;
+        }
+
+        if (type === 'driver') {
+          if (!form.employeeId || !form.phone) {
+            Alert.alert('Error', 'Employee ID and phone number are required for drivers');
+            return;
+          }
+        }
+
+        if (type === 'rider' && !form.registrationNumber) {
+          Alert.alert('Error', 'Registration number is required for students/employees');
+          return;
+        }
+
+        // Upload photo if provided
+        let photoURL: string | undefined = undefined;
+        if (form.photo) {
+          try {
+            console.log('Uploading photo...');
+            // Use a temporary ID for upload, will be updated after user creation
+            const tempId = `temp_${Date.now()}`;
+            photoURL = await uploadProfilePhoto(form.photo, tempId);
+            console.log('Photo uploaded successfully:', photoURL);
+          } catch (error: any) {
+            console.error('Photo upload error:', error);
+            
+            // Show specific error message but continue with account creation
+            const errorMsg = error.message || 'Photo upload failed';
+            Alert.alert(
+              '⚠️ Photo Upload Failed', 
+              `${errorMsg}\n\nYour account will still be created. You can add a photo later from your profile.`,
+              [{ text: 'Continue', style: 'default' }]
+            );
+          }
+        }
+
+        // Sign up with Firebase
+        const userData: any = {
+          name: form.name,
+          email: form.email,
+          role: type === 'driver' ? 'driver' : (form.email.includes('@vit.ac.in') ? 'student' : 'employee'),
+          photoURL: photoURL || undefined,
+        };
+
+        if (type === 'driver') {
+          userData.employeeId = form.employeeId;
+          userData.phone = form.phone;
+          // Vehicle number will be set in driver dashboard
+        } else {
+          userData.registrationNumber = form.registrationNumber;
+        }
+
+        console.log('Creating account with data:', userData);
+        const user = await signUp(form.email, form.password, userData);
+        console.log('Account created successfully for user:', user.uid);
+
+        // Navigate immediately after successful signup
+        console.log('Navigating to home screen...');
+        if (type === 'driver') {
+          router.replace('/driver-home');
+        } else {
+          router.replace('/(tabs)/map');
+        }
+        
+        // Show success message after navigation
+        setTimeout(() => {
+          Alert.alert('✅ Success!', `Welcome ${form.name}! Your account has been created successfully.`);
+        }, 500);
+
       } else {
-        Alert.alert('Error', 'Invalid credentials');
+        // Login
+        if (!form.email || !form.password) {
+          Alert.alert('❌ Error', 'Please enter email and password');
+          return;
+        }
+
+        console.log('Attempting login for:', form.email);
+        const user = await signIn(form.email, form.password);
+        console.log('Login successful for user:', user.uid);
+
+        // Navigate immediately after successful login
+        console.log('Navigating to home screen...');
+        if (type === 'driver') {
+          router.replace('/driver-home');
+        } else {
+          router.replace('/(tabs)/map');
+        }
+        
+        // Show success message after navigation
+        setTimeout(() => {
+          Alert.alert('✅ Login Successful!', 'Welcome back!');
+        }, 500);
       }
+    } catch (error: any) {
+      console.error('Auth error:', error);
+      let errorTitle = '❌ Authentication Failed';
+      let errorMessage = 'An error occurred. Please try again.';
+      
+      if (error.message.includes('email-already-in-use')) {
+        errorMessage = 'This email is already registered. Please use the Login tab instead.';
+      } else if (error.message.includes('invalid-email')) {
+        errorMessage = 'Please enter a valid email address.';
+      } else if (error.message.includes('weak-password')) {
+        errorMessage = 'Password is too weak. Please use at least 6 characters.';
+      } else if (error.message.includes('user-not-found')) {
+        errorMessage = 'No account found with this email. Please sign up first.';
+      } else if (error.message.includes('wrong-password') || error.message.includes('invalid-credential')) {
+        errorMessage = 'Incorrect password. Please try again.';
+      } else if (error.message.includes('too-many-requests')) {
+        errorMessage = 'Too many failed attempts. Please try again later.';
+      } else if (error.message.includes('network')) {
+        errorMessage = 'Network error. Please check your internet connection.';
+      } else if (error.message) {
+        errorMessage = error.message;
+      }
+
+      Alert.alert(errorTitle, errorMessage);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -144,6 +298,18 @@ export default function AuthScreen() {
           testID="confirm-password-input"
         />
       </View>
+      {type === 'rider' && (
+        <View style={styles.inputContainer}>
+          <User size={20} color="#666" />
+          <TextInput
+            style={styles.input}
+            placeholder="Registration Number"
+            value={form.registrationNumber}
+            onChangeText={(value) => handleInputChange('registrationNumber', value)}
+            testID="registration-input"
+          />
+        </View>
+      )}
       {type === 'driver' && (
         <>
           <View style={styles.inputContainer}>
@@ -169,7 +335,9 @@ export default function AuthScreen() {
           </View>
           <TouchableOpacity style={styles.photoButton} onPress={pickImage} testID="photo-button">
             <Camera size={20} color="#007AFF" />
-            <Text style={styles.photoButtonText}>Upload Photo</Text>
+            <Text style={styles.photoButtonText}>
+              {form.photo ? 'Change Photo' : 'Upload Photo (Optional)'}
+            </Text>
           </TouchableOpacity>
           {form.photo && (
             <Image source={{ uri: form.photo }} style={styles.photoPreview} testID="photo-preview" />
@@ -202,8 +370,17 @@ export default function AuthScreen() {
       </View>
       <ScrollView style={styles.formContainer} showsVerticalScrollIndicator={false}>
         {activeTab === 'login' ? renderLoginForm() : renderSignupForm()}
-        <TouchableOpacity style={styles.button} onPress={handleSubmit} testID="submit-button">
-          <Text style={styles.buttonText}>{activeTab === 'login' ? 'Login' : 'Sign Up'}</Text>
+        <TouchableOpacity 
+          style={[styles.button, loading && styles.buttonDisabled]} 
+          onPress={handleSubmit} 
+          disabled={loading}
+          testID="submit-button"
+        >
+          {loading ? (
+            <ActivityIndicator color="white" />
+          ) : (
+            <Text style={styles.buttonText}>{activeTab === 'login' ? 'Login' : 'Sign Up'}</Text>
+          )}
         </TouchableOpacity>
         {activeTab === 'login' && type === 'rider' && (
           <Link href="/auth?type=rider" style={styles.link}>
@@ -307,6 +484,9 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     alignItems: 'center',
     marginTop: 20,
+  },
+  buttonDisabled: {
+    backgroundColor: '#999',
   },
   buttonText: {
     color: 'white',

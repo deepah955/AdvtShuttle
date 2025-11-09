@@ -1,0 +1,28 @@
+{
+  "rules": {
+    "users": {
+      "$uid": {
+        ".read": "$uid === auth.uid",
+        ".write": "$uid === auth.uid"
+      }
+    },
+    "drivers": {
+      "$driverId": {
+        ".read": true,
+        ".write": "$driverId === auth.uid",
+        ".validate": "newData.hasChildren(['name', 'email', 'isOnShift'])"
+      }
+    },
+    "shuttleLocations": {
+      ".read": true,
+      "$driverId": {
+        ".write": "$driverId === auth.uid",
+        ".validate": "newData.hasChildren(['lat', 'lon', 'timestamp', 'routeId']) && newData.child('lat').isNumber() && newData.child('lon').isNumber() && newData.child('timestamp').isNumber()"
+      }
+    },
+    "routes": {
+      ".read": true,
+      ".write": false
+    }
+  }
+}

@@ -4,6 +4,7 @@ import { Shuttle } from '@/constants/routes';
 import { calculateETA, formatETA } from '@/utils/eta';
 import { MapPin, Clock, User } from 'lucide-react-native';
 import { MAPPLS_API_KEY } from '@/constants/config';
+import { getBusMarkerForRoute } from '@/utils/imageUtils';
 
 // FIX: Replace conditional require with a direct import to resolve TypeScript error.
 import { WebView } from 'react-native-webview';
@@ -20,8 +21,21 @@ interface MapViewProps {
 
 export default function MapView({ shuttles, userLat, userLon }: MapViewProps) {
   const [selectedShuttle, setSelectedShuttle] = useState<Shuttle | null>(null);
+  const [busIcons, setBusIcons] = useState<Record<string, string>>({});
   const mapContainerRef = useRef<any>(null);
   const bottomSheetY = useRef(new Animated.Value(height)).current;
+
+  // Load bus icons for each route (synchronous - no async needed)
+  useEffect(() => {
+    const icons: Record<string, string> = {};
+    const uniqueRoutes = [...new Set(shuttles.map(s => s.routeId))];
+    
+    for (const routeId of uniqueRoutes) {
+      icons[routeId] = getBusMarkerForRoute(routeId);
+    }
+    
+    setBusIcons(icons);
+  }, [shuttles]);
 
   useEffect(() => {
     if (selectedShuttle) {
@@ -47,6 +61,7 @@ export default function MapView({ shuttles, userLat, userLon }: MapViewProps) {
           lon: s.lon,
           routeId: s.routeId,
           vehicleNo: s.vehicleNo,
+          busIcon: busIcons[s.routeId] || undefined,
         })),
       });
 
@@ -65,7 +80,7 @@ export default function MapView({ shuttles, userLat, userLon }: MapViewProps) {
       }
     };
     updateMarkers();
-  }, [shuttles, userLat, userLon]);
+  }, [shuttles, userLat, userLon, busIcons]);
 
   useEffect(() => {
     if (Platform.OS === 'web') {
@@ -161,6 +176,7 @@ export default function MapView({ shuttles, userLat, userLon }: MapViewProps) {
                   lon: s.lon,
                   routeId: s.routeId,
                   vehicleNo: s.vehicleNo,
+                  busIcon: busIcons[s.routeId] || undefined,
                 })))}
               });
             });
@@ -209,16 +225,22 @@ export default function MapView({ shuttles, userLat, userLon }: MapViewProps) {
           
           data.shuttles.forEach(function(shuttle) {
             var color = shuttle.routeId === 'lh-prp' ? '#007AFF' : '#FF9500';
-            var iconSvg = 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40"><circle cx="20" cy="20" r="18" fill="' + color + '"/><path d="M17 20H7V21C7 21.5523 6.55228 22 6 22H5C4.44772 22 4 21.5523 4 21V12L2.4453 11.2226C2.17514 11.0875 2 10.8148 2 10.5157V9C2 8.44772 2.44772 8 3 8H4V5C4 3.89543 4.89543 3 6 3H18C19.1046 3 20 3.89543 20 5V8H21C21.5523 8 22 8.44772 22 9V10.5157C22 10.8148 21.8249 11.0875 21.5547 11.2226L20 12V21C20 21.5523 19.5523 22 19 22H18C17.4477 22 17 21.5523 17 21V20ZM6 5V8H18V5H6ZM6 10V18H18V10H6ZM7 12H11V16H7V12ZM13 12H17V16H13V12Z" transform="translate(9, 9) scale(0.8)" fill="white"/></svg>');
+            // Use bus icon if available (base64 PNG), otherwise fallback to SVG
+            var iconUrl = shuttle.busIcon || 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40"><circle cx="20" cy="20" r="18" fill="' + color + '"/><path d="M17 20H7V21C7 21.5523 6.55228 22 6 22H5C4.44772 22 4 21.5523 4 21V12L2.4453 11.2226C2.17514 11.0875 2 10.8148 2 10.5157V9C2 8.44772 2.44772 8 3 8H4V5C4 3.89543 4.89543 3 6 3H18C19.1046 3 20 3.89543 20 5V8H21C21.5523 8 22 8.44772 22 9V10.5157C22 10.8148 21.8249 11.0875 21.5547 11.2226L20 12V21C20 21.5523 19.5523 22 19 22H18C17.4477 22 17 21.5523 17 21V20ZM6 5V8H18V5H6ZM6 10V18H18V10H6ZM7 12H11V16H7V12ZM13 12H17V16H13V12Z" transform="translate(9, 9) scale(0.8)" fill="white"/></svg>');
             
             if (shuttleMarkers[shuttle.id]) {
+              // Update position for existing marker
               shuttleMarkers[shuttle.id].setPosition({lat: shuttle.lat, lng: shuttle.lon});
+              // Note: Icon updates are handled when marker is first created
+              // If icon loads later, it will be used for new shuttles on the same route
             } else {
+              // Create new marker with bus icon
               var marker = new MapmyIndia.Marker({
                 map: map,
                 position: {lat: shuttle.lat, lng: shuttle.lon},
                 fitbounds: false,
-                icon: iconSvg
+                icon: iconUrl,
+                title: shuttle.vehicleNo || 'Shuttle'
               });
               
               marker.addListener('click', function() {
