@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { Animated, Dimensions, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Animated, Dimensions, Platform, StyleSheet, Text, TouchableOpacity, View, Image } from 'react-native';
 import { Shuttle } from '@/constants/routes';
 import { calculateETA, formatETA } from '@/utils/eta';
 import { MapPin, Clock, User } from 'lucide-react-native';
@@ -8,6 +8,9 @@ import { getBusMarkerForRoute } from '@/utils/imageUtils';
 
 // FIX: Replace conditional require with a direct import to resolve TypeScript error.
 import { WebView } from 'react-native-webview';
+
+// Load bus.png from assets
+const busImage = require('@/assets/images/bus.png');
 
 const { width, height } = Dimensions.get('window');
 const MAP_WIDTH = width;
@@ -25,46 +28,118 @@ export default function MapView({ shuttles, userLat, userLon }: MapViewProps) {
   const mapContainerRef = useRef<any>(null);
   const bottomSheetY = useRef(new Animated.Value(height)).current;
 
-  // Generate bus icons for each route using SVG (avoids jimp errors)
+  // Load bus.png from assets and convert to data URL for map markers
   useEffect(() => {
-    const icons: Record<string, string> = {};
-    const uniqueRoutes = [...new Set(shuttles.map(s => s.routeId))];
+    const loadBusIcon = async () => {
+      try {
+        let busIconUrl: string;
+        
+        if (Platform.OS === 'web') {
+          // For web: Get the image URL from require
+          const imageSource = Image.resolveAssetSource(busImage);
+          if (imageSource?.uri) {
+            // Fetch the image and convert to data URL
+            try {
+              const response = await fetch(imageSource.uri);
+              const blob = await response.blob();
+              const reader = new FileReader();
+              
+              reader.onloadend = () => {
+                const dataUrl = reader.result as string;
+                const icons: Record<string, string> = {};
+                const uniqueRoutes = [...new Set(shuttles.map(s => s.routeId))];
+                
+                // Use the same bus icon for all routes (from bus.png)
+                for (const routeId of uniqueRoutes) {
+                  icons[routeId] = dataUrl;
+                }
+                
+                setBusIcons(icons);
+                console.log('✅ [MAP] Bus icon loaded from bus.png for routes:', uniqueRoutes);
+              };
+              
+              reader.onerror = () => {
+                console.warn('⚠️ [MAP] Failed to convert bus.png to data URL, using SVG fallback');
+                // Fallback to SVG
+                generateSVGIcons();
+              };
+              
+              reader.readAsDataURL(blob);
+            } catch (fetchError) {
+              console.warn('⚠️ [MAP] Failed to fetch bus.png, using SVG fallback:', fetchError);
+              generateSVGIcons();
+            }
+          } else {
+            console.warn('⚠️ [MAP] Could not resolve bus.png asset, using SVG fallback');
+            generateSVGIcons();
+          }
+        } else {
+          // For native: Use Image.resolveAssetSource
+          const imageSource = Image.resolveAssetSource(busImage);
+          if (imageSource?.uri) {
+            const icons: Record<string, string> = {};
+            const uniqueRoutes = [...new Set(shuttles.map(s => s.routeId))];
+            
+            // Use the same bus icon for all routes (from bus.png)
+            for (const routeId of uniqueRoutes) {
+              icons[routeId] = imageSource.uri;
+            }
+            
+            setBusIcons(icons);
+            console.log('✅ [MAP] Bus icon loaded from bus.png for routes:', uniqueRoutes);
+          } else {
+            console.warn('⚠️ [MAP] Could not resolve bus.png asset, using SVG fallback');
+            generateSVGIcons();
+          }
+        }
+      } catch (error) {
+        console.error('❌ [MAP] Error loading bus icon:', error);
+        generateSVGIcons();
+      }
+    };
 
-    // Create enhanced SVG bus icons for each route
-    for (const routeId of uniqueRoutes) {
-      const color = routeId === 'lh-prp' ? '#007AFF' : '#FF9500';
+    const generateSVGIcons = () => {
+      const icons: Record<string, string> = {};
+      const uniqueRoutes = [...new Set(shuttles.map(s => s.routeId))];
 
-      // Enhanced bus SVG with better visibility
-      const svgIcon = `
-        <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
-          <defs>
-            <filter id="shadow" x="-50%" y="-50%" width="200%" height="200%">
-              <feGaussianBlur in="SourceAlpha" stdDeviation="2"/>
-              <feOffset dx="0" dy="2" result="offsetblur"/>
-              <feComponentTransfer>
-                <feFuncA type="linear" slope="0.3"/>
-              </feComponentTransfer>
-              <feMerge>
-                <feMergeNode/>
-                <feMergeNode in="SourceGraphic"/>
-              </feMerge>
-            </filter>
-          </defs>
-          <circle cx="24" cy="24" r="20" fill="${color}" stroke="white" stroke-width="3" filter="url(#shadow)"/>
-          <g transform="translate(12, 12) scale(1.2)">
-            <path d="M3 6h14v1c0 .55-.45 1-1 1h-1c-.55 0-1-.45-1-1v-1H3zm0 2v6h14V8H3zm1 1h3v3H4V9zm5 0h3v3H9V9z" fill="white"/>
-            <rect x="4" y="3" width="12" height="2" rx="1" fill="white"/>
-            <circle cx="6" cy="15" r="1.5" fill="white"/>
-            <circle cx="14" cy="15" r="1.5" fill="white"/>
-          </g>
-        </svg>
-      `;
+      // Fallback: Create enhanced SVG bus icons for each route
+      for (const routeId of uniqueRoutes) {
+        const color = routeId === 'lh-prp' ? '#007AFF' : '#FF9500';
 
-      icons[routeId] = 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svgIcon);
-    }
+        // Enhanced bus SVG with better visibility
+        const svgIcon = `
+          <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+            <defs>
+              <filter id="shadow" x="-50%" y="-50%" width="200%" height="200%">
+                <feGaussianBlur in="SourceAlpha" stdDeviation="2"/>
+                <feOffset dx="0" dy="2" result="offsetblur"/>
+                <feComponentTransfer>
+                  <feFuncA type="linear" slope="0.3"/>
+                </feComponentTransfer>
+                <feMerge>
+                  <feMergeNode/>
+                  <feMergeNode in="SourceGraphic"/>
+                </feMerge>
+              </filter>
+            </defs>
+            <circle cx="24" cy="24" r="20" fill="${color}" stroke="white" stroke-width="3" filter="url(#shadow)"/>
+            <g transform="translate(12, 12) scale(1.2)">
+              <path d="M3 6h14v1c0 .55-.45 1-1 1h-1c-.55 0-1-.45-1-1v-1H3zm0 2v6h14V8H3zm1 1h3v3H4V9zm5 0h3v3H9V9z" fill="white"/>
+              <rect x="4" y="3" width="12" height="2" rx="1" fill="white"/>
+              <circle cx="6" cy="15" r="1.5" fill="white"/>
+              <circle cx="14" cy="15" r="1.5" fill="white"/>
+            </g>
+          </svg>
+        `;
 
-    setBusIcons(icons);
-    console.log('✅ [MAP] Bus icons generated for routes:', uniqueRoutes);
+        icons[routeId] = 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svgIcon);
+      }
+
+      setBusIcons(icons);
+      console.log('✅ [MAP] SVG bus icons generated as fallback for routes:', uniqueRoutes);
+    };
+
+    loadBusIcon();
   }, [shuttles]);
 
   useEffect(() => {
