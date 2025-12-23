@@ -1,6 +1,6 @@
+// Location service - MongoDB Backend Integration
 import * as Location from 'expo-location';
-import { ref, set, remove, onValue, off } from 'firebase/database';
-import { database } from './firebase';
+import { apiRequest } from './api';
 
 export interface DriverLocation {
   driverId: string;
@@ -25,7 +25,7 @@ export const startLocationTracking = async (
 ): Promise<void> => {
   try {
     console.log(`📍 [LOCATION] Starting location tracking for driver: ${driverId}, route: ${routeId}`);
-    
+
     // Request location permissions
     const { status } = await Location.requestForegroundPermissionsAsync();
     if (status !== 'granted') {
@@ -48,7 +48,7 @@ export const startLocationTracking = async (
       const initialLocation = await Location.getCurrentPositionAsync({
         accuracy: Location.Accuracy.High,
       });
-      
+
       const initialLocationData: DriverLocation = {
         driverId,
         routeId,
@@ -59,7 +59,7 @@ export const startLocationTracking = async (
         timestamp: Date.now(),
         isOnShift: true
       };
-      
+
       await updateLocation(driverId, initialLocationData);
       console.log('✅ [LOCATION] Initial location saved:', initialLocationData.lat, initialLocationData.lon);
     } catch (initialError) {
@@ -110,7 +110,7 @@ export const startLocationTracking = async (
 export const stopLocationTracking = async (driverId: string): Promise<void> => {
   try {
     console.log(`🛑 [LOCATION] Stopping location tracking for driver: ${driverId}`);
-    
+
     // Stop location subscription for this driver
     if (locationSubscriptions.has(driverId)) {
       const subscription = locationSubscriptions.get(driverId);
@@ -121,14 +121,15 @@ export const stopLocationTracking = async (driverId: string): Promise<void> => {
       locationSubscriptions.delete(driverId);
     }
 
-    // Remove location from Firebase
+    // Remove location from database
     try {
-      const locationRef = ref(database, `shuttleLocations/${driverId}`);
-      await remove(locationRef);
-      console.log('✅ [LOCATION] Location removed from Firebase');
-    } catch (firebaseError) {
-      console.error('⚠️ [LOCATION] Error removing location from Firebase:', firebaseError);
-      // Continue even if Firebase removal fails
+      await apiRequest(`/locations/${driverId}`, {
+        method: 'DELETE'
+      });
+      console.log('✅ [LOCATION] Location removed from database');
+    } catch (dbError) {
+      console.error('⚠️ [LOCATION] Error removing location from database:', dbError);
+      // Continue even if database removal fails
     }
 
     console.log('✅ [LOCATION] Location tracking stopped for driver:', driverId);
@@ -139,21 +140,24 @@ export const stopLocationTracking = async (driverId: string): Promise<void> => {
 };
 
 /**
- * Update driver location in Firebase
+ * Update driver location in database
  */
 export const updateLocation = async (
   driverId: string,
   location: DriverLocation
 ): Promise<void> => {
   try {
-    const locationRef = ref(database, `shuttleLocations/${driverId}`);
-    await set(locationRef, {
-      lat: location.lat,
-      lon: location.lon,
-      speed: location.speed,
-      bearing: location.bearing,
-      timestamp: location.timestamp,
-      routeId: location.routeId
+    await apiRequest('/locations/update', {
+      method: 'POST',
+      body: JSON.stringify({
+        driverId,
+        routeId: location.routeId,
+        lat: location.lat,
+        lon: location.lon,
+        speed: location.speed,
+        bearing: location.bearing,
+        timestamp: location.timestamp
+      })
     });
   } catch (error: any) {
     console.error('Update location error:', error);
@@ -162,24 +166,48 @@ export const updateLocation = async (
 };
 
 /**
- * Subscribe to shuttle locations
+ * Subscribe to shuttle locations (polling)
  */
 export const subscribeToShuttleLocations = (
   callback: (locations: Record<string, any>) => void
 ): (() => void) => {
-  const locationsRef = ref(database, 'shuttleLocations');
-  
-  const listener = onValue(locationsRef, (snapshot) => {
-    if (snapshot.exists()) {
-      callback(snapshot.val());
-    } else {
+  let intervalId: NodeJS.Timeout;
+
+  const fetchLocations = async () => {
+    try {
+      const response = await apiRequest('/locations/active');
+
+      // Convert array to object keyed by driverId
+      const locationsMap: Record<string, any> = {};
+      response.forEach((shuttle: any) => {
+        locationsMap[shuttle.id] = {
+          lat: shuttle.lat,
+          lon: shuttle.lon,
+          speed: shuttle.speed,
+          bearing: shuttle.bearing,
+          routeId: shuttle.routeId,
+          timestamp: shuttle.timestamp
+        };
+      });
+
+      callback(locationsMap);
+    } catch (error) {
+      console.error('Fetch shuttle locations error:', error);
       callback({});
     }
-  });
-  
+  };
+
+  // Initial fetch
+  fetchLocations();
+
+  // Poll for updates every 5 seconds
+  intervalId = setInterval(fetchLocations, 5000);
+
   // Return unsubscribe function
   return () => {
-    off(locationsRef);
+    if (intervalId) {
+      clearInterval(intervalId);
+    }
   };
 };
 
@@ -187,8 +215,7 @@ export const subscribeToShuttleLocations = (
  * Unsubscribe from shuttle locations
  */
 export const unsubscribeFromShuttleLocations = (): void => {
-  const locationsRef = ref(database, 'shuttleLocations');
-  off(locationsRef);
+  console.warn('unsubscribeFromShuttleLocations: Use the unsubscribe function returned by subscribeToShuttleLocations');
 };
 
 /**

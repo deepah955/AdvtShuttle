@@ -1,7 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { User } from 'firebase/auth';
-import { onAuthStateChange, getCurrentUser, getUserData } from '@/services/auth';
-import { UserData } from '@/services/auth';
+import { onAuthStateChange, getCurrentUser, getUserData, User, UserData } from '@/services/auth';
 
 interface AuthContextType {
   user: User | null;
@@ -34,7 +32,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Listen to auth state changes
     const unsubscribe = onAuthStateChange(async (firebaseUser) => {
       setUser(firebaseUser);
-      
+
       if (firebaseUser) {
         try {
           const data = await getUserData(firebaseUser.uid);
@@ -45,7 +43,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       } else {
         setUserData(null);
       }
-      
+
       setLoading(false);
     });
 

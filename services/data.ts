@@ -1,6 +1,6 @@
-import { ref, set, get, onValue, off, update } from 'firebase/database';
-import { database } from './firebase';
+// Data service - MongoDB Backend Integration
 import { Shuttle } from '@/constants/routes';
+import { apiRequest } from './api';
 
 export interface ShuttleData {
   id: string;
@@ -30,13 +30,18 @@ export interface DriverData {
   createdAt: number;
 }
 
+// Polling interval for real-time updates (in milliseconds)
+const POLLING_INTERVAL = 5000; // 5 seconds
+
 /**
- * Save user data to Firebase
+ * Save user data to database
  */
 export const saveUserData = async (uid: string, userData: any): Promise<void> => {
   try {
-    const userRef = ref(database, `users/${uid}`);
-    await set(userRef, userData);
+    await apiRequest(`/users/${uid}`, {
+      method: 'PUT',
+      body: JSON.stringify(userData)
+    });
   } catch (error: any) {
     console.error('Save user data error:', error);
     throw new Error(error.message || 'Failed to save user data');
@@ -44,17 +49,12 @@ export const saveUserData = async (uid: string, userData: any): Promise<void> =>
 };
 
 /**
- * Get user data from Firebase
+ * Get user data from database
  */
 export const getUserData = async (uid: string): Promise<any> => {
   try {
-    const userRef = ref(database, `users/${uid}`);
-    const snapshot = await get(userRef);
-    
-    if (snapshot.exists()) {
-      return snapshot.val();
-    }
-    return null;
+    const response = await apiRequest(`/users/${uid}`);
+    return response;
   } catch (error: any) {
     console.error('Get user data error:', error);
     throw new Error(error.message || 'Failed to get user data');
@@ -70,10 +70,9 @@ export const updateDriverShiftStatus = async (
   routeId: string | null
 ): Promise<void> => {
   try {
-    const driverRef = ref(database, `drivers/${driverId}`);
-    await update(driverRef, {
-      isOnShift,
-      currentRoute: routeId
+    await apiRequest(`/drivers/${driverId}/shift`, {
+      method: 'PUT',
+      body: JSON.stringify({ isOnShift, routeId })
     });
   } catch (error: any) {
     console.error('Update shift status error:', error);
@@ -86,65 +85,32 @@ export const updateDriverShiftStatus = async (
  */
 export const getActiveShuttles = async (): Promise<Shuttle[]> => {
   try {
-    const driversRef = ref(database, 'drivers');
-    const locationsRef = ref(database, 'shuttleLocations');
-    const usersRef = ref(database, 'users');
-    
-    const [driversSnapshot, locationsSnapshot, usersSnapshot] = await Promise.all([
-      get(driversRef),
-      get(locationsRef),
-      get(usersRef)
-    ]);
-    
-    const shuttles: Shuttle[] = [];
-    
-    if (driversSnapshot.exists() && locationsSnapshot.exists()) {
-      const drivers = driversSnapshot.val();
-      const locations = locationsSnapshot.val();
-      const users = usersSnapshot.exists() ? usersSnapshot.val() : {};
-      
-      Object.keys(drivers).forEach(driverId => {
-        const driver = drivers[driverId];
-        const location = locations[driverId];
-        const user = users[driverId] || {};
-        
-        // Only include drivers who are on shift and have location data
-        if (driver.isOnShift && location && location.lat && location.lon) {
-          // Use name from users collection if available, otherwise from drivers
-          const driverName = user.name || driver.name || 'Driver';
-          
-          shuttles.push({
-            id: driverId,
-            routeId: driver.currentRoute || location.routeId || 'unknown',
-            lat: location.lat,
-            lon: location.lon,
-            speed: location.speed || 0,
-            bearing: location.bearing || 0,
-            driverName: driverName,
-            vehicleNo: driver.vehicleNo || 'N/A'
-          });
-        }
-      });
-    }
-    
-    console.log(`✅ Found ${shuttles.length} active shuttles`);
-    return shuttles;
+    const response = await apiRequest('/locations/active');
+    return response.map((shuttle: any) => ({
+      id: shuttle.id,
+      routeId: shuttle.routeId,
+      lat: shuttle.lat,
+      lon: shuttle.lon,
+      speed: shuttle.speed,
+      bearing: shuttle.bearing,
+      driverName: shuttle.driverName,
+      vehicleNo: shuttle.vehicleNo
+    }));
   } catch (error: any) {
-    console.error('❌ Get active shuttles error:', error);
-    throw new Error(error.message || 'Failed to get active shuttles');
+    console.error('Get active shuttles error:', error);
+    return [];
   }
 };
 
 /**
- * Subscribe to active shuttles with real-time updates
+ * Subscribe to active shuttles with real-time updates (polling)
  */
 export const subscribeToActiveShuttles = (
   callback: (shuttles: Shuttle[]) => void
 ): (() => void) => {
-  const driversRef = ref(database, 'drivers');
-  const locationsRef = ref(database, 'shuttleLocations');
-  
-  const updateShuttles = async () => {
+  let intervalId: NodeJS.Timeout;
+
+  const fetchShuttles = async () => {
     try {
       const shuttles = await getActiveShuttles();
       callback(shuttles);
@@ -152,15 +118,18 @@ export const subscribeToActiveShuttles = (
       console.error('Subscribe to shuttles error:', error);
     }
   };
-  
-  // Listen to both drivers and locations changes
-  onValue(driversRef, updateShuttles);
-  onValue(locationsRef, updateShuttles);
-  
+
+  // Initial fetch
+  fetchShuttles();
+
+  // Poll for updates
+  intervalId = setInterval(fetchShuttles, POLLING_INTERVAL);
+
   // Return unsubscribe function
   return () => {
-    off(driversRef);
-    off(locationsRef);
+    if (intervalId) {
+      clearInterval(intervalId);
+    }
   };
 };
 
@@ -169,13 +138,18 @@ export const subscribeToActiveShuttles = (
  */
 export const getDriverData = async (driverId: string): Promise<DriverData | null> => {
   try {
-    const driverRef = ref(database, `drivers/${driverId}`);
-    const snapshot = await get(driverRef);
-    
-    if (snapshot.exists()) {
-      return snapshot.val() as DriverData;
-    }
-    return null;
+    const response = await apiRequest(`/drivers/${driverId}`);
+    return {
+      name: response.name,
+      email: response.email,
+      employeeId: response.employeeId,
+      phone: response.phone,
+      vehicleNo: response.vehicleNo,
+      photoURL: response.photoURL,
+      isOnShift: response.isOnShift,
+      currentRoute: response.currentRoute,
+      createdAt: new Date(response.createdAt).getTime()
+    };
   } catch (error: any) {
     console.error('Get driver data error:', error);
     throw new Error(error.message || 'Failed to get driver data');
@@ -183,35 +157,17 @@ export const getDriverData = async (driverId: string): Promise<DriverData | null
 };
 
 /**
- * Update driver route selection with comprehensive sync
+ * Update driver route selection
  */
 export const updateDriverRoute = async (
   driverId: string,
   routeId: string
 ): Promise<void> => {
   try {
-    console.log(`Updating route for driver ${driverId} to ${routeId}`);
-    
-    const driverRef = ref(database, `drivers/${driverId}`);
-    const updateData = {
-      currentRoute: routeId,
-      lastRouteUpdate: Date.now()
-    };
-    
-    await update(driverRef, updateData);
-    console.log('Route update completed in Firebase');
-    
-    // Verify the update was successful
-    const snapshot = await get(driverRef);
-    if (snapshot.exists()) {
-      const data = snapshot.val();
-      console.log('Verification - current route in Firebase:', data.currentRoute);
-      if (data.currentRoute !== routeId) {
-        throw new Error('Route update verification failed');
-      }
-    } else {
-      throw new Error('Driver data not found after update');
-    }
+    await apiRequest(`/drivers/${driverId}/route`, {
+      method: 'PUT',
+      body: JSON.stringify({ routeId })
+    });
   } catch (error: any) {
     console.error('Update driver route error:', error);
     throw new Error(error.message || 'Failed to update driver route');
@@ -226,30 +182,12 @@ export const updateDriverVehicleNumber = async (
   vehicleNo: string
 ): Promise<void> => {
   try {
-    console.log(`[VEHICLE UPDATE] Updating vehicle number for driver ${driverId} to ${vehicleNo}`);
-    
-    const driverRef = ref(database, `drivers/${driverId}`);
-    const updateData = {
-      vehicleNo: vehicleNo.trim(),
-      vehicleUpdatedAt: Date.now()
-    };
-    
-    await update(driverRef, updateData);
-    
-    // Verify the update
-    const verificationSnapshot = await get(driverRef);
-    if (verificationSnapshot.exists()) {
-      const data = verificationSnapshot.val();
-      if (data.vehicleNo === vehicleNo.trim()) {
-        console.log('[VEHICLE UPDATE] ✅ Vehicle number updated and verified');
-      } else {
-        throw new Error('Vehicle number verification failed');
-      }
-    } else {
-      throw new Error('Driver data not found after vehicle update');
-    }
+    await apiRequest(`/drivers/${driverId}/vehicle`, {
+      method: 'PUT',
+      body: JSON.stringify({ vehicleNo })
+    });
   } catch (error: any) {
-    console.error('[VEHICLE UPDATE] ❌ Error:', error);
+    console.error('Update vehicle error:', error);
     throw new Error(error.message || 'Failed to update vehicle number');
   }
 };
@@ -259,76 +197,58 @@ export const updateDriverVehicleNumber = async (
  */
 export const initializeDriverData = async (driverId: string): Promise<DriverData> => {
   try {
-    console.log(`[DRIVER INIT] Initializing driver data for ${driverId}`);
-    
-    const driverRef = ref(database, `drivers/${driverId}`);
-    const driverSnapshot = await get(driverRef);
-    
-    if (driverSnapshot.exists()) {
-      console.log('[DRIVER INIT] Driver data already exists');
-      return driverSnapshot.val() as DriverData;
-    }
-    
-    // Get user data to create driver record
-    const userRef = ref(database, `users/${driverId}`);
-    const userSnapshot = await get(userRef);
-    
-    if (!userSnapshot.exists()) {
-      throw new Error('User data not found - cannot initialize driver');
-    }
-    
-    const userData = userSnapshot.val();
-    const initialDriverData: DriverData = {
-      name: userData.name,
-      email: userData.email,
-      employeeId: userData.employeeId || undefined,
-      phone: userData.phone || undefined,
-      vehicleNo: userData.vehicleNo || undefined,
-      photoURL: userData.photoURL || undefined,
-      isOnShift: false,
-      currentRoute: null,
-      createdAt: Date.now()
+    const response = await apiRequest('/drivers/initialize', {
+      method: 'POST',
+      body: JSON.stringify({ userId: driverId })
+    });
+
+    return {
+      name: response.name,
+      email: response.email,
+      employeeId: response.employeeId,
+      phone: response.phone,
+      vehicleNo: response.vehicleNo,
+      photoURL: response.photoURL,
+      isOnShift: response.isOnShift,
+      currentRoute: response.currentRoute,
+      createdAt: new Date(response.createdAt).getTime()
     };
-    
-    console.log('[DRIVER INIT] Creating new driver record:', initialDriverData);
-    await set(driverRef, initialDriverData);
-    
-    // Verify creation
-    const verificationSnapshot = await get(driverRef);
-    if (!verificationSnapshot.exists()) {
-      throw new Error('Failed to create driver record');
-    }
-    
-    console.log('[DRIVER INIT] ✅ Driver data initialized successfully');
-    return initialDriverData;
   } catch (error: any) {
-    console.error('[DRIVER INIT] ❌ Error:', error);
+    console.error('Initialize driver error:', error);
     throw new Error(error.message || 'Failed to initialize driver data');
   }
 };
 
 /**
- * Subscribe to driver data changes for real-time updates
+ * Subscribe to driver data changes for real-time updates (polling)
  */
 export const subscribeToDriverData = (
   driverId: string,
   callback: (driverData: DriverData | null) => void
 ): (() => void) => {
-  const driverRef = ref(database, `drivers/${driverId}`);
-  
-  const listener = onValue(driverRef, (snapshot) => {
-    if (snapshot.exists()) {
-      const data = snapshot.val() as DriverData;
-      console.log('Driver data updated:', data);
+  let intervalId: NodeJS.Timeout;
+
+  const fetchDriverData = async () => {
+    try {
+      const data = await getDriverData(driverId);
       callback(data);
-    } else {
+    } catch (error) {
+      console.error('Subscribe to driver data error:', error);
       callback(null);
     }
-  });
-  
+  };
+
+  // Initial fetch
+  fetchDriverData();
+
+  // Poll for updates
+  intervalId = setInterval(fetchDriverData, POLLING_INTERVAL);
+
   // Return unsubscribe function
   return () => {
-    off(driverRef);
+    if (intervalId) {
+      clearInterval(intervalId);
+    }
   };
 };
 
@@ -340,16 +260,10 @@ export const updateUserRoute = async (
   routeId: string
 ): Promise<void> => {
   try {
-    console.log(`Updating route for user ${userId} to ${routeId}`);
-    
-    const userRef = ref(database, `users/${userId}`);
-    const updateData = {
-      selectedRoute: routeId,
-      lastRouteUpdate: Date.now()
-    };
-    
-    await update(userRef, updateData);
-    console.log('User route update completed in Firebase');
+    await apiRequest(`/users/${userId}/route`, {
+      method: 'PUT',
+      body: JSON.stringify({ routeId })
+    });
   } catch (error: any) {
     console.error('Update user route error:', error);
     throw new Error(error.message || 'Failed to update user route');
@@ -361,16 +275,10 @@ export const updateUserRoute = async (
  */
 export const getUserRoute = async (userId: string): Promise<string | null> => {
   try {
-    const userRef = ref(database, `users/${userId}`);
-    const snapshot = await get(userRef);
-    
-    if (snapshot.exists()) {
-      const data = snapshot.val();
-      return data.selectedRoute || null;
-    }
-    return null;
+    const response = await apiRequest(`/users/${userId}/route`);
+    return response.selectedRoute || null;
   } catch (error: any) {
     console.error('Get user route error:', error);
-    throw new Error(error.message || 'Failed to get user route');
+    return null;
   }
 };

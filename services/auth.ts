@@ -1,13 +1,6 @@
-import {
-  createUserWithEmailAndPassword,
-  signInWithEmailAndPassword,
-  signOut as firebaseSignOut,
-  onAuthStateChanged,
-  User,
-  updateProfile
-} from 'firebase/auth';
-import { ref, set, get } from 'firebase/database';
-import { auth, database } from './firebase';
+// Authentication service - MongoDB + JWT Backend Integration
+
+import { apiRequest, storeToken, removeToken, getStoredToken } from './api';
 
 export interface UserData {
   uid: string;
@@ -22,6 +15,17 @@ export interface UserData {
   createdAt: number;
 }
 
+export interface User {
+  uid: string;
+  email: string | null;
+  displayName: string | null;
+  photoURL: string | null;
+}
+
+// Store current user in memory
+let currentUser: User | null = null;
+let authStateListeners: Array<(user: User | null) => void> = [];
+
 /**
  * Sign up a new user with email and password
  */
@@ -31,42 +35,28 @@ export const signUp = async (
   userData: Omit<UserData, 'uid' | 'createdAt'>
 ): Promise<User> => {
   try {
-    // Create user in Firebase Auth
-    const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-    const user = userCredential.user;
-
-    // Update display name
-    await updateProfile(user, {
-      displayName: userData.name,
-      photoURL: userData.photoURL || null
+    const response = await apiRequest('/auth/signup', {
+      method: 'POST',
+      body: JSON.stringify({
+        email,
+        password,
+        ...userData
+      })
     });
 
-    // Save user data to Realtime Database
-    const completeUserData: UserData = {
-      ...userData,
-      uid: user.uid,
-      email: user.email!,
-      createdAt: Date.now()
+    // Store JWT token
+    await storeToken(response.token);
+
+    // Create user object
+    const user: User = {
+      uid: response.user.uid,
+      email: response.user.email,
+      displayName: response.user.name,
+      photoURL: response.user.photoURL || null
     };
 
-    const userRef = ref(database, `users/${user.uid}`);
-    await set(userRef, completeUserData);
-
-    // If driver, also save to drivers collection
-    if (userData.role === 'driver') {
-      const driverRef = ref(database, `drivers/${user.uid}`);
-      await set(driverRef, {
-        name: userData.name,
-        email: user.email,
-        employeeId: userData.employeeId,
-        phone: userData.phone,
-        vehicleNo: userData.vehicleNo,
-        photoURL: userData.photoURL,
-        isOnShift: false,
-        currentRoute: null,
-        createdAt: Date.now()
-      });
-    }
+    currentUser = user;
+    notifyAuthStateListeners(user);
 
     return user;
   } catch (error: any) {
@@ -80,8 +70,26 @@ export const signUp = async (
  */
 export const signIn = async (email: string, password: string): Promise<User> => {
   try {
-    const userCredential = await signInWithEmailAndPassword(auth, email, password);
-    return userCredential.user;
+    const response = await apiRequest('/auth/signin', {
+      method: 'POST',
+      body: JSON.stringify({ email, password })
+    });
+
+    // Store JWT token
+    await storeToken(response.token);
+
+    // Create user object
+    const user: User = {
+      uid: response.user.uid,
+      email: response.user.email,
+      displayName: response.user.displayName,
+      photoURL: response.user.photoURL || null
+    };
+
+    currentUser = user;
+    notifyAuthStateListeners(user);
+
+    return user;
   } catch (error: any) {
     console.error('Sign in error:', error);
     throw new Error(error.message || 'Failed to sign in');
@@ -93,7 +101,9 @@ export const signIn = async (email: string, password: string): Promise<User> => 
  */
 export const signOut = async (): Promise<void> => {
   try {
-    await firebaseSignOut(auth);
+    await removeToken();
+    currentUser = null;
+    notifyAuthStateListeners(null);
   } catch (error: any) {
     console.error('Sign out error:', error);
     throw new Error(error.message || 'Failed to sign out');
@@ -104,7 +114,48 @@ export const signOut = async (): Promise<void> => {
  * Get the current authenticated user
  */
 export const getCurrentUser = (): User | null => {
-  return auth.currentUser;
+  return currentUser;
+};
+
+/**
+ * Initialize auth state from stored token
+ */
+export const initializeAuth = async (): Promise<User | null> => {
+  try {
+    const token = await getStoredToken();
+    if (!token) {
+      return null;
+    }
+
+    // Decode JWT to get user info (basic decode, not verification)
+    const payload = JSON.parse(atob(token.split('.')[1]));
+
+    const user: User = {
+      uid: payload.userId,
+      email: payload.email,
+      displayName: null,
+      photoURL: null
+    };
+
+    // Fetch full user data
+    try {
+      const userData = await getUserData(payload.userId);
+      if (userData) {
+        user.displayName = userData.name;
+        user.photoURL = userData.photoURL || null;
+      }
+    } catch (error) {
+      console.warn('Could not fetch user data:', error);
+    }
+
+    currentUser = user;
+    notifyAuthStateListeners(user);
+    return user;
+  } catch (error) {
+    console.error('Initialize auth error:', error);
+    await removeToken();
+    return null;
+  }
 };
 
 /**
@@ -112,13 +163,19 @@ export const getCurrentUser = (): User | null => {
  */
 export const getUserData = async (uid: string): Promise<UserData | null> => {
   try {
-    const userRef = ref(database, `users/${uid}`);
-    const snapshot = await get(userRef);
-    
-    if (snapshot.exists()) {
-      return snapshot.val() as UserData;
-    }
-    return null;
+    const response = await apiRequest(`/users/${uid}`);
+    return {
+      uid: response._id,
+      email: response.email,
+      name: response.name,
+      role: response.role,
+      registrationNumber: response.registrationNumber,
+      employeeId: response.employeeId,
+      phone: response.phone,
+      photoURL: response.photoURL,
+      vehicleNo: response.vehicleNo,
+      createdAt: new Date(response.createdAt).getTime()
+    };
   } catch (error: any) {
     console.error('Get user data error:', error);
     throw new Error(error.message || 'Failed to get user data');
@@ -133,16 +190,16 @@ export const updateUserProfile = async (
   updates: Partial<UserData>
 ): Promise<void> => {
   try {
-    const userRef = ref(database, `users/${uid}`);
-    await set(userRef, updates);
+    await apiRequest(`/users/${uid}`, {
+      method: 'PUT',
+      body: JSON.stringify(updates)
+    });
 
-    // Update auth profile if name or photo changed
-    const user = auth.currentUser;
-    if (user && (updates.name || updates.photoURL)) {
-      await updateProfile(user, {
-        displayName: updates.name || user.displayName,
-        photoURL: updates.photoURL || user.photoURL
-      });
+    // Update current user if it's the same user
+    if (currentUser && currentUser.uid === uid) {
+      if (updates.name) currentUser.displayName = updates.name;
+      if (updates.photoURL !== undefined) currentUser.photoURL = updates.photoURL;
+      notifyAuthStateListeners(currentUser);
     }
   } catch (error: any) {
     console.error('Update profile error:', error);
@@ -154,5 +211,23 @@ export const updateUserProfile = async (
  * Listen to auth state changes
  */
 export const onAuthStateChange = (callback: (user: User | null) => void) => {
-  return onAuthStateChanged(auth, callback);
+  authStateListeners.push(callback);
+
+  // Immediately call with current state
+  callback(currentUser);
+
+  // Return unsubscribe function
+  return () => {
+    authStateListeners = authStateListeners.filter(listener => listener !== callback);
+  };
 };
+
+/**
+ * Notify all auth state listeners
+ */
+const notifyAuthStateListeners = (user: User | null) => {
+  authStateListeners.forEach(listener => listener(user));
+};
+
+// Initialize auth on module load
+initializeAuth();

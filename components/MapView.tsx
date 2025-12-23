@@ -25,16 +25,46 @@ export default function MapView({ shuttles, userLat, userLon }: MapViewProps) {
   const mapContainerRef = useRef<any>(null);
   const bottomSheetY = useRef(new Animated.Value(height)).current;
 
-  // Load bus icons for each route (synchronous - no async needed)
+  // Generate bus icons for each route using SVG (avoids jimp errors)
   useEffect(() => {
     const icons: Record<string, string> = {};
     const uniqueRoutes = [...new Set(shuttles.map(s => s.routeId))];
-    
+
+    // Create enhanced SVG bus icons for each route
     for (const routeId of uniqueRoutes) {
-      icons[routeId] = getBusMarkerForRoute(routeId);
+      const color = routeId === 'lh-prp' ? '#007AFF' : '#FF9500';
+
+      // Enhanced bus SVG with better visibility
+      const svgIcon = `
+        <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+          <defs>
+            <filter id="shadow" x="-50%" y="-50%" width="200%" height="200%">
+              <feGaussianBlur in="SourceAlpha" stdDeviation="2"/>
+              <feOffset dx="0" dy="2" result="offsetblur"/>
+              <feComponentTransfer>
+                <feFuncA type="linear" slope="0.3"/>
+              </feComponentTransfer>
+              <feMerge>
+                <feMergeNode/>
+                <feMergeNode in="SourceGraphic"/>
+              </feMerge>
+            </filter>
+          </defs>
+          <circle cx="24" cy="24" r="20" fill="${color}" stroke="white" stroke-width="3" filter="url(#shadow)"/>
+          <g transform="translate(12, 12) scale(1.2)">
+            <path d="M3 6h14v1c0 .55-.45 1-1 1h-1c-.55 0-1-.45-1-1v-1H3zm0 2v6h14V8H3zm1 1h3v3H4V9zm5 0h3v3H9V9z" fill="white"/>
+            <rect x="4" y="3" width="12" height="2" rx="1" fill="white"/>
+            <circle cx="6" cy="15" r="1.5" fill="white"/>
+            <circle cx="14" cy="15" r="1.5" fill="white"/>
+          </g>
+        </svg>
+      `;
+
+      icons[routeId] = 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svgIcon);
     }
-    
+
     setBusIcons(icons);
+    console.log('✅ [MAP] Bus icons generated for routes:', uniqueRoutes);
   }, [shuttles]);
 
   useEffect(() => {
@@ -53,29 +83,42 @@ export default function MapView({ shuttles, userLat, userLon }: MapViewProps) {
 
   useEffect(() => {
     const updateMarkers = () => {
+      console.log(`📍 [MAP] Updating markers - ${shuttles.length} shuttles, busIcons loaded: ${Object.keys(busIcons).length}`);
+
       const markersData = JSON.stringify({
         user: { lat: userLat, lon: userLon },
-        shuttles: shuttles.map(s => ({
-          id: s.id,
-          lat: s.lat,
-          lon: s.lon,
-          routeId: s.routeId,
-          vehicleNo: s.vehicleNo,
-          busIcon: busIcons[s.routeId] || undefined,
-        })),
+        shuttles: shuttles.map(s => {
+          const icon = busIcons[s.routeId];
+          console.log(`🚌 [MAP] Shuttle ${s.id} (${s.routeId}): lat=${s.lat}, lon=${s.lon}, vehicle=${s.vehicleNo}, icon=${icon ? 'loaded' : 'missing'}`);
+          return {
+            id: s.id,
+            lat: s.lat,
+            lon: s.lon,
+            routeId: s.routeId,
+            vehicleNo: s.vehicleNo,
+            driverName: s.driverName,
+            busIcon: icon || undefined,
+          };
+        }),
       });
 
       if (Platform.OS === 'web') {
         const iframe = document.getElementById('map-iframe') as HTMLIFrameElement;
         if (iframe && iframe.contentWindow) {
+          console.log('📤 [MAP] Sending markers to iframe');
           iframe.contentWindow.postMessage({ type: 'updateMarkers', data: markersData }, '*');
+        } else {
+          console.warn('⚠️ [MAP] Iframe not ready');
         }
       } else {
         if (mapContainerRef.current && mapContainerRef.current.injectJavaScript) {
+          console.log('📤 [MAP] Injecting JavaScript to update markers');
           mapContainerRef.current.injectJavaScript(`
             updateMarkers(${markersData});
             true;
           `);
+        } else {
+          console.warn('⚠️ [MAP] WebView not ready');
         }
       }
     };
@@ -171,13 +214,13 @@ export default function MapView({ shuttles, userLat, userLon }: MapViewProps) {
               updateMarkers({
                 user: { lat: ${userLat}, lon: ${userLon} },
                 shuttles: ${JSON.stringify(shuttles.map(s => ({
-                  id: s.id,
-                  lat: s.lat,
-                  lon: s.lon,
-                  routeId: s.routeId,
-                  vehicleNo: s.vehicleNo,
-                  busIcon: busIcons[s.routeId] || undefined,
-                })))}
+    id: s.id,
+    lat: s.lat,
+    lon: s.lon,
+    routeId: s.routeId,
+    vehicleNo: s.vehicleNo,
+    busIcon: busIcons[s.routeId] || undefined,
+  })))}
               });
             });
           } catch (error) {
@@ -199,12 +242,23 @@ export default function MapView({ shuttles, userLat, userLon }: MapViewProps) {
         
         function updateMarkers(data) {
           if (!map || !mapLoaded) {
-            console.log('Map not ready yet');
+            console.log('⏳ Map not ready yet, waiting...');
             return;
           }
           
-          console.log('Updating markers:', data);
+          console.log('🗺️ Updating markers with data:', {
+            userLat: data.user.lat,
+            userLon: data.user.lon,
+            shuttleCount: data.shuttles.length,
+            shuttles: data.shuttles.map(s => ({
+              id: s.id,
+              routeId: s.routeId,
+              vehicle: s.vehicleNo,
+              hasIcon: !!s.busIcon
+            }))
+          });
           
+          // Update user marker
           if (userMarker) {
             userMarker.remove();
           }
@@ -215,36 +269,55 @@ export default function MapView({ shuttles, userLat, userLon }: MapViewProps) {
             fitbounds: false,
             icon: 'https://apis.mapmyindia.com/map_v3/1.png'
           });
+          console.log('📍 User marker updated');
           
+          // Remove markers for shuttles that no longer exist
           Object.keys(shuttleMarkers).forEach(function(id) {
             if (!data.shuttles.find(function(s) { return s.id === id; })) {
+              console.log('🗑️ Removing marker for shuttle:', id);
               shuttleMarkers[id].remove();
               delete shuttleMarkers[id];
             }
           });
           
+          // Update or create shuttle markers
           data.shuttles.forEach(function(shuttle) {
             var color = shuttle.routeId === 'lh-prp' ? '#007AFF' : '#FF9500';
-            // Use bus icon if available (base64 PNG), otherwise fallback to SVG
-            var iconUrl = shuttle.busIcon || 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40"><circle cx="20" cy="20" r="18" fill="' + color + '"/><path d="M17 20H7V21C7 21.5523 6.55228 22 6 22H5C4.44772 22 4 21.5523 4 21V12L2.4453 11.2226C2.17514 11.0875 2 10.8148 2 10.5157V9C2 8.44772 2.44772 8 3 8H4V5C4 3.89543 4.89543 3 6 3H18C19.1046 3 20 3.89543 20 5V8H21C21.5523 8 22 8.44772 22 9V10.5157C22 10.8148 21.8249 11.0875 21.5547 11.2226L20 12V21C20 21.5523 19.5523 22 19 22H18C17.4477 22 17 21.5523 17 21V20ZM6 5V8H18V5H6ZM6 10V18H18V10H6ZM7 12H11V16H7V12ZM13 12H17V16H13V12Z" transform="translate(9, 9) scale(0.8)" fill="white"/></svg>');
+            
+            // Determine icon URL
+            var iconUrl;
+            if (shuttle.busIcon) {
+              // If we have a bus icon from assets, use it
+              iconUrl = shuttle.busIcon;
+              console.log('🚌 Using bus.png icon for shuttle:', shuttle.id);
+            } else {
+              // Fallback to SVG icon with route color
+              iconUrl = 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(
+                '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40">' +
+                '<circle cx="20" cy="20" r="18" fill="' + color + '"/>' +
+                '<path d="M17 20H7V21C7 21.5523 6.55228 22 6 22H5C4.44772 22 4 21.5523 4 21V12L2.4453 11.2226C2.17514 11.0875 2 10.8148 2 10.5157V9C2 8.44772 2.44772 8 3 8H4V5C4 3.89543 4.89543 3 6 3H18C19.1046 3 20 3.89543 20 5V8H21C21.5523 8 22 8.44772 22 9V10.5157C22 10.8148 21.8249 11.0875 21.5547 11.2226L20 12V21C20 21.5523 19.5523 22 19 22H18C17.4477 22 17 21.5523 17 21V20ZM6 5V8H18V5H6ZM6 10V18H18V10H6ZM7 12H11V16H7V12ZM13 12H17V16H13V12Z" transform="translate(9, 9) scale(0.8)" fill="white"/>' +
+                '</svg>'
+              );
+              console.log('⚠️ Using SVG fallback for shuttle:', shuttle.id);
+            }
             
             if (shuttleMarkers[shuttle.id]) {
-              // Update position for existing marker
+              // Update existing marker position
+              console.log('🔄 Updating position for shuttle:', shuttle.id, 'to', shuttle.lat, shuttle.lon);
               shuttleMarkers[shuttle.id].setPosition({lat: shuttle.lat, lng: shuttle.lon});
-              // Note: Icon updates are handled when marker is first created
-              // If icon loads later, it will be used for new shuttles on the same route
             } else {
-              // Create new marker with bus icon
+              // Create new marker
+              console.log('✨ Creating new marker for shuttle:', shuttle.id, 'at', shuttle.lat, shuttle.lon);
               var marker = new MapmyIndia.Marker({
                 map: map,
                 position: {lat: shuttle.lat, lng: shuttle.lon},
                 fitbounds: false,
                 icon: iconUrl,
-                title: shuttle.vehicleNo || 'Shuttle'
+                title: shuttle.vehicleNo || shuttle.driverName || 'Shuttle'
               });
               
               marker.addListener('click', function() {
-                console.log('Shuttle clicked:', shuttle.id);
+                console.log('🖱️ Shuttle clicked:', shuttle.id);
                 if (window.ReactNativeWebView) {
                   window.ReactNativeWebView.postMessage(JSON.stringify({
                     type: 'shuttleClick',
@@ -261,6 +334,8 @@ export default function MapView({ shuttles, userLat, userLon }: MapViewProps) {
               shuttleMarkers[shuttle.id] = marker;
             }
           });
+          
+          console.log('✅ Markers updated successfully. Active shuttles:', Object.keys(shuttleMarkers).length);
         }
         
         waitForMapmyIndia(function() {

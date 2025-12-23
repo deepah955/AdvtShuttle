@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { StyleSheet, Text, TextInput, TouchableOpacity, View, Alert, ActivityIndicator } from 'react-native';
+import { StyleSheet, Text, TextInput, TouchableOpacity, View, Alert, ActivityIndicator, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Truck, MapPin, Settings, LogOut } from 'lucide-react-native';
 import { getCurrentUser, signOut, getUserData } from '@/services/auth';
-import { getDriverData, subscribeToDriverData } from '@/services/data';
+import { getDriverData, subscribeToDriverData, updateDriverShiftStatus, updateDriverVehicleNumber } from '@/services/data';
 import { startLocationTracking, stopLocationTracking } from '@/services/location';
 
 export default function DriverHomeScreen() {
@@ -17,7 +17,7 @@ export default function DriverHomeScreen() {
   const [showVehicleInput, setShowVehicleInput] = useState(false);
   const [justSelectedRoute, setJustSelectedRoute] = useState(false);
   const isUpdatingShiftRef = useRef(false); // Use ref to prevent subscription from overriding user actions
-  
+
   // Get navigation parameters
   const params = useLocalSearchParams();
   const routeFromNav = params.selectedRoute as string;
@@ -40,31 +40,31 @@ export default function DriverHomeScreen() {
       routeNameFromNav,
       fromRouteSelection
     });
-    
+
     if (routeFromNav && fromRouteSelection === 'true') {
       console.log('🎯 [DRIVER HOME] Route received from navigation:', routeFromNav, routeNameFromNav);
-      
+
       // Immediately update UI with the selected route - no delays
       setSelectedRoute(routeFromNav);
       setJustSelectedRoute(true);
       setLoading(false); // Ensure loading is false so UI renders immediately
-      
+
       console.log('✅ [DRIVER HOME] Route synchronized immediately from navigation');
-      
+
       // Show success message after a brief delay to ensure screen is visible
       const alertTimeout = setTimeout(() => {
         Alert.alert(
-          '✅ Route Selected Successfully!', 
+          '✅ Route Selected Successfully!',
           `${routeNameFromNav || routeFromNav} has been selected and is now active.`,
           [{ text: 'OK' }]
         );
       }, 500);
-      
+
       // Remove the "just selected" indicator after 5 seconds
       const indicatorTimeout = setTimeout(() => {
         setJustSelectedRoute(false);
       }, 5000);
-      
+
       // Cleanup timeouts on unmount
       return () => {
         clearTimeout(alertTimeout);
@@ -82,7 +82,7 @@ export default function DriverHomeScreen() {
   useFocusEffect(
     React.useCallback(() => {
       console.log('📱 [DRIVER HOME] Screen focused, fromRouteSelection:', fromRouteSelection);
-      
+
       // If coming from route selection, ensure route is set immediately
       if (fromRouteSelection === 'true' && routeFromNav) {
         console.log('✅ [DRIVER HOME] Setting route immediately from navigation params');
@@ -92,7 +92,7 @@ export default function DriverHomeScreen() {
         // Don't reload data - use the navigation params instead
         return;
       }
-      
+
       // Only reload if not coming from route selection (to avoid overriding fresh data)
       if (fromRouteSelection !== 'true') {
         console.log('🔄 [DRIVER HOME] Reloading data on focus');
@@ -110,7 +110,7 @@ export default function DriverHomeScreen() {
     if (!user) return;
 
     console.log('📡 [DRIVER HOME] Setting up real-time driver data subscription');
-    
+
     const unsubscribe = subscribeToDriverData(user.uid, (driverData) => {
       if (driverData) {
         console.log('📡 [DRIVER HOME] Real-time update received:', {
@@ -118,7 +118,7 @@ export default function DriverHomeScreen() {
           isUpdatingShift: isUpdatingShiftRef.current,
           currentState: isOnShift
         });
-        
+
         // CRITICAL: Only update from Firebase if we're not in the middle of a local update
         // This prevents race conditions where Firebase hasn't updated yet from our action
         if (!isUpdatingShiftRef.current) {
@@ -132,12 +132,12 @@ export default function DriverHomeScreen() {
           // Don't update - user action takes priority
           return;
         }
-        
+
         // Update vehicle number (safe to update)
         if (driverData.vehicleNo && driverData.vehicleNo !== vehicleNo) {
           setVehicleNo(driverData.vehicleNo);
         }
-        
+
         // Priority: Navigation params > Real-time updates
         // Only update route from real-time if we don't have fresh navigation data
         const hasNavRoute = routeFromNav && fromRouteSelection === 'true';
@@ -158,7 +158,7 @@ export default function DriverHomeScreen() {
             setSelectedRoute(routeFromNav);
           }
         }
-        
+
         // Update vehicle input visibility (only if not on shift)
         if (!driverData.isOnShift) {
           const shouldShowInput = !driverData.vehicleNo;
@@ -198,34 +198,34 @@ export default function DriverHomeScreen() {
           currentRoute: driverData.currentRoute,
           vehicleNo: driverData.vehicleNo
         });
-        
+
         setIsOnShift(driverData.isOnShift);
         setVehicleNo(driverData.vehicleNo || '');
-        
-      // Priority handling: Navigation params take precedence over Firebase data
-      // Check if we're coming from route selection with fresh route data
-      const hasNavRoute = routeFromNav && fromRouteSelection === 'true';
-      if (hasNavRoute) {
-        // We have navigation route - ALWAYS use it (don't let Firebase override)
-        // This ensures the route selected by user is immediately visible
-        setSelectedRoute(routeFromNav);
-        console.log('✅ [DRIVER HOME] Using navigation route (priority):', routeFromNav);
-        
-        // Verify Firebase matches (it should after save completes)
-        // But don't override - navigation params are the source of truth when present
-        if (driverData.currentRoute && driverData.currentRoute !== routeFromNav) {
-          console.log('⚠️ [DRIVER HOME] Firebase route differs - keeping navigation route, will sync via real-time');
-        } else if (driverData.currentRoute === routeFromNav) {
-          console.log('✅ [DRIVER HOME] Firebase route matches navigation route - perfect sync!');
+
+        // Priority handling: Navigation params take precedence over Firebase data
+        // Check if we're coming from route selection with fresh route data
+        const hasNavRoute = routeFromNav && fromRouteSelection === 'true';
+        if (hasNavRoute) {
+          // We have navigation route - ALWAYS use it (don't let Firebase override)
+          // This ensures the route selected by user is immediately visible
+          setSelectedRoute(routeFromNav);
+          console.log('✅ [DRIVER HOME] Using navigation route (priority):', routeFromNav);
+
+          // Verify Firebase matches (it should after save completes)
+          // But don't override - navigation params are the source of truth when present
+          if (driverData.currentRoute && driverData.currentRoute !== routeFromNav) {
+            console.log('⚠️ [DRIVER HOME] Firebase route differs - keeping navigation route, will sync via real-time');
+          } else if (driverData.currentRoute === routeFromNav) {
+            console.log('✅ [DRIVER HOME] Firebase route matches navigation route - perfect sync!');
+          }
+        } else {
+          // No navigation route - use Firebase data as normal
+          if (driverData.currentRoute) {
+            setSelectedRoute(driverData.currentRoute);
+            console.log('📊 [DRIVER HOME] Route updated from Firebase:', driverData.currentRoute);
+          }
         }
-      } else {
-        // No navigation route - use Firebase data as normal
-        if (driverData.currentRoute) {
-          setSelectedRoute(driverData.currentRoute);
-          console.log('📊 [DRIVER HOME] Route updated from Firebase:', driverData.currentRoute);
-        }
-      }
-        
+
         // Show vehicle input if no vehicle number and not on shift
         const shouldShowInput = !driverData.vehicleNo && !driverData.isOnShift;
         setShowVehicleInput(shouldShowInput);
@@ -297,20 +297,13 @@ export default function DriverHomeScreen() {
     setShiftLoading(true);
     isUpdatingShiftRef.current = true; // Block subscription updates
 
-    // Firebase update in background (non-blocking)
-    const updateFirebase = async () => {
+    // Backend update in background (non-blocking)
+    const updateBackend = async () => {
       try {
-        const { ref, update } = await import('firebase/database');
-        const { database } = await import('@/services/firebase');
-        
-        const driverRef = ref(database, `drivers/${user.uid}`);
-        await update(driverRef, { 
-          vehicleNo: vehicleNo.trim(),
-          isOnShift: true,
-          currentRoute: selectedRoute,
-          lastShiftUpdate: Date.now()
-        });
-        console.log('✅ [START SHIFT] Firebase updated successfully');
+        // Update vehicle number and shift status
+        await updateDriverVehicleNumber(user.uid, vehicleNo.trim());
+        await updateDriverShiftStatus(user.uid, true, selectedRoute);
+        console.log('✅ [START SHIFT] Backend updated successfully');
 
         // Start location tracking after Firebase update
         try {
@@ -323,7 +316,7 @@ export default function DriverHomeScreen() {
 
         // Clear loading state first (button will now show "End Shift")
         setShiftLoading(false);
-        
+
         // Allow subscription updates after Firebase is synced (3 seconds to ensure sync)
         setTimeout(() => {
           isUpdatingShiftRef.current = false;
@@ -348,13 +341,10 @@ export default function DriverHomeScreen() {
           // For other errors, keep shift started but log the error
           console.warn('⚠️ [START SHIFT] Minor error but shift remains active:', error);
           isUpdatingShiftRef.current = false;
-          // Try to update Firebase again in background
+          // Try to update backend again in background
           setTimeout(async () => {
             try {
-              const { ref, update } = await import('firebase/database');
-              const { database } = await import('@/services/firebase');
-              const driverRef = ref(database, `drivers/${user.uid}`);
-              await update(driverRef, { isOnShift: true, currentRoute: selectedRoute });
+              await updateDriverShiftStatus(user.uid, true, selectedRoute);
             } catch (retryError) {
               console.error('❌ [START SHIFT] Retry update failed:', retryError);
             }
@@ -363,111 +353,205 @@ export default function DriverHomeScreen() {
       }
     };
 
-    // Start Firebase update in background
-    updateFirebase();
+    // Start backend update in background
+    updateBackend();
+  };
+
+  const confirmEndShift = () => {
+    const user = getCurrentUser();
+    if (!user) {
+      if (Platform.OS === 'web') {
+        window.alert('❌ Error: User not authenticated');
+      } else {
+        Alert.alert('❌ Error', 'User not authenticated');
+      }
+      return;
+    }
+
+    console.log('✅ [END SHIFT] User confirmed - ending shift for driver:', user.uid);
+
+    // CRITICAL: Update UI state IMMEDIATELY for instant feedback
+    console.log('🔄 [END SHIFT] Updating UI state immediately');
+    setIsOnShift(false);
+    setShiftLoading(true);
+    isUpdatingShiftRef.current = true; // Block subscription updates
+
+    // Backend update in background (non-blocking)
+    const updateBackend = async () => {
+      try {
+        console.log('🔄 [END SHIFT] Step 1: Stopping location tracking...');
+        // Stop location tracking first
+        try {
+          await stopLocationTracking(user.uid);
+          console.log('✅ [END SHIFT] Location tracking stopped successfully');
+        } catch (locationError: any) {
+          console.error('⚠️ [END SHIFT] Location stop error:', locationError);
+          // Continue even if location stop fails
+        }
+
+        console.log('🔄 [END SHIFT] Step 2: Updating backend shift status...');
+        console.log('🔄 [END SHIFT] Calling updateDriverShiftStatus with:', {
+          driverId: user.uid,
+          isOnShift: false,
+          routeId: null
+        });
+
+        // Update shift status in backend
+        await updateDriverShiftStatus(user.uid, false, null);
+        console.log('✅ [END SHIFT] Backend updated successfully');
+
+        // Clear loading state first (button will now show "Start Shift")
+        setShiftLoading(false);
+
+        // Allow subscription updates after backend is synced (3 seconds to ensure sync)
+        setTimeout(() => {
+          isUpdatingShiftRef.current = false;
+          console.log('✅ [END SHIFT] Allowing subscription updates - state should be synced');
+        }, 3000);
+
+        // Show success message after a brief delay
+        setTimeout(() => {
+          if (Platform.OS === 'web') {
+            window.alert('✅ Shift Ended Successfully!\n\nLocation sharing has been stopped. You can now select a different route.');
+          } else {
+            Alert.alert('✅ Shift Ended Successfully!', 'Location sharing has been stopped. You can now select a different route.');
+          }
+        }, 500);
+      } catch (error: any) {
+        console.error('❌ [END SHIFT] Backend update error:', error);
+        console.error('❌ [END SHIFT] Error details:', {
+          message: error.message,
+          code: error.code,
+          stack: error.stack
+        });
+
+        setShiftLoading(false);
+
+        // Show detailed error to user
+        const errorMessage = error.message || 'Unknown error occurred';
+        console.log('❌ [END SHIFT] Showing error alert to user:', errorMessage);
+
+        // Check if it's a network error
+        if (errorMessage.includes('fetch') || errorMessage.includes('network') || errorMessage.includes('Failed to fetch')) {
+          if (Platform.OS === 'web') {
+            window.alert('❌ Network Error\n\nCould not connect to the server. Please check:\n\n1. Backend server is running\n2. Your internet connection\n3. API URL is correct\n\nShift status updated locally, but may not sync until connection is restored.');
+          } else {
+            Alert.alert(
+              '❌ Network Error',
+              'Could not connect to the server. Please check:\n\n1. Backend server is running\n2. Your internet connection\n3. API URL is correct\n\nShift status updated locally, but may not sync until connection is restored.',
+              [{ text: 'OK' }]
+            );
+          }
+          // Keep shift ended locally
+          isUpdatingShiftRef.current = false;
+        } else if (error.code === 'permission-denied') {
+          // Revert state for permission errors
+          setIsOnShift(true);
+          isUpdatingShiftRef.current = false;
+          if (Platform.OS === 'web') {
+            window.alert('❌ Permission Denied\n\nYou do not have permission to end this shift. Please contact support.');
+          } else {
+            Alert.alert(
+              '❌ Permission Denied',
+              'You do not have permission to end this shift. Please contact support.',
+              [{ text: 'OK' }]
+            );
+          }
+        } else {
+          // For other errors, keep shift ended but show warning
+          console.warn('⚠️ [END SHIFT] Non-critical error, keeping shift ended:', error);
+          isUpdatingShiftRef.current = false;
+
+          if (Platform.OS === 'web') {
+            window.alert(`⚠️ Warning\n\nShift ended locally, but server update failed:\n\n${errorMessage}\n\nRetrying in background...`);
+          } else {
+            Alert.alert(
+              '⚠️ Warning',
+              `Shift ended locally, but server update failed:\n\n${errorMessage}\n\nRetrying in background...`,
+              [{ text: 'OK' }]
+            );
+          }
+
+          // Try to update backend again in background
+          setTimeout(async () => {
+            try {
+              console.log('🔄 [END SHIFT] Retrying backend update...');
+              await updateDriverShiftStatus(user.uid, false, null);
+              console.log('✅ [END SHIFT] Retry successful');
+            } catch (retryError) {
+              console.error('❌ [END SHIFT] Retry update failed:', retryError);
+            }
+          }, 1000);
+        }
+      }
+    };
+
+    // Start backend update in background
+    updateBackend();
   };
 
   const handleEndShift = async () => {
+    console.log('🛑 [END SHIFT] Button clicked');
+    
     // Prevent double-clicking
-    if (shiftLoading || !isOnShift) {
-      console.log('⏸️ [END SHIFT] Not on shift or loading, ignoring click');
+    if (shiftLoading) {
+      console.log('⏸️ [END SHIFT] Already loading, ignoring click');
+      return;
+    }
+
+    if (!isOnShift) {
+      console.log('⏸️ [END SHIFT] Not on shift, ignoring click');
+      if (Platform.OS === 'web') {
+        window.alert('⚠️ Not On Shift\n\nYou are not currently on shift.');
+      } else {
+        Alert.alert('⚠️ Not On Shift', 'You are not currently on shift.');
+      }
       return;
     }
 
     const user = getCurrentUser();
     if (!user) {
-      Alert.alert('Error', 'User not authenticated');
+      if (Platform.OS === 'web') {
+        window.alert('❌ Error: User not authenticated');
+      } else {
+        Alert.alert('❌ Error', 'User not authenticated');
+      }
       return;
     }
 
-    Alert.alert(
-      'End Shift',
-      'Are you sure you want to end your shift? Location sharing will stop.',
-      [
-        {
-          text: 'Cancel',
-          style: 'cancel'
-        },
-        {
-          text: 'End Shift',
-          style: 'destructive',
-          onPress: () => {
-            console.log('🛑 [END SHIFT] Ending shift for driver:', user.uid);
+    console.log('✅ [END SHIFT] Showing confirmation alert');
 
-            // CRITICAL: Update UI state IMMEDIATELY for instant feedback
-            console.log('🔄 [END SHIFT] Updating UI state immediately');
-            setIsOnShift(false);
-            setShiftLoading(true);
-            isUpdatingShiftRef.current = true; // Block subscription updates
-
-            // Firebase update in background (non-blocking)
-            const updateFirebase = async () => {
-              try {
-                // Stop location tracking first
-                try {
-                  await stopLocationTracking(user.uid);
-                  console.log('✅ [END SHIFT] Location tracking stopped');
-                } catch (locationError: any) {
-                  console.error('⚠️ [END SHIFT] Location stop error:', locationError);
-                  // Continue even if location stop fails
-                }
-
-                // Update shift status in Firebase
-                const { ref, update } = await import('firebase/database');
-                const { database } = await import('@/services/firebase');
-                const driverRef = ref(database, `drivers/${user.uid}`);
-                await update(driverRef, { 
-                  isOnShift: false,
-                  lastShiftUpdate: Date.now()
-                });
-                console.log('✅ [END SHIFT] Firebase updated successfully');
-
-                // Clear loading state first (button will now show "Start Shift")
-                setShiftLoading(false);
-                
-                // Allow subscription updates after Firebase is synced (3 seconds to ensure sync)
-                setTimeout(() => {
-                  isUpdatingShiftRef.current = false;
-                  console.log('✅ [END SHIFT] Allowing subscription updates - state should be synced');
-                }, 3000);
-
-                // Show success message after a brief delay
-                setTimeout(() => {
-                  Alert.alert('✅ Shift Ended', 'Location sharing has been stopped. You can now select a different route.');
-                }, 500);
-              } catch (error: any) {
-                console.error('❌ [END SHIFT] Firebase update error:', error);
-                setShiftLoading(false);
-                // Only revert UI state on critical errors
-                if (error.code === 'network-error' || error.code === 'permission-denied') {
-                  setIsOnShift(true);
-                  isUpdatingShiftRef.current = false;
-                  Alert.alert('❌ Error', error.message || 'Failed to end shift. Please check your connection and try again.');
-                } else {
-                  // For other errors, keep shift ended but log the error
-                  console.warn('⚠️ [END SHIFT] Minor error but shift remains ended:', error);
-                  isUpdatingShiftRef.current = false;
-                  // Try to update Firebase again in background
-                  setTimeout(async () => {
-                    try {
-                      const { ref, update } = await import('firebase/database');
-                      const { database } = await import('@/services/firebase');
-                      const driverRef = ref(database, `drivers/${user.uid}`);
-                      await update(driverRef, { isOnShift: false });
-                    } catch (retryError) {
-                      console.error('❌ [END SHIFT] Retry update failed:', retryError);
-                    }
-                  }, 1000);
-                }
-              }
-            };
-
-            // Start Firebase update in background
-            updateFirebase();
+    // Use web-compatible confirmation
+    if (Platform.OS === 'web') {
+      // Use window.confirm for web (works reliably)
+      const confirmed = window.confirm('Are you sure you want to end your shift? Location sharing will stop.');
+      if (confirmed) {
+        confirmEndShift();
+      } else {
+        console.log('❌ [END SHIFT] User cancelled');
+      }
+    } else {
+      // Use Alert.alert for mobile
+      Alert.alert(
+        'End Shift',
+        'Are you sure you want to end your shift? Location sharing will stop.',
+        [
+          {
+            text: 'Cancel',
+            style: 'cancel',
+            onPress: () => {
+              console.log('❌ [END SHIFT] User cancelled');
+            }
+          },
+          {
+            text: 'End Shift',
+            style: 'destructive',
+            onPress: confirmEndShift
           }
-        }
-      ]
-    );
+        ],
+        { cancelable: true }
+      );
+    }
   };
 
   const handleSelectRoute = () => {
@@ -518,7 +602,7 @@ export default function DriverHomeScreen() {
   // Don't show loading screen if we have navigation params (route selection)
   // This ensures immediate navigation works
   const shouldShowLoading = loading && !(routeFromNav && fromRouteSelection === 'true');
-  
+
   if (shouldShowLoading) {
     return (
       <SafeAreaView style={styles.container}>
@@ -537,12 +621,12 @@ export default function DriverHomeScreen() {
           <Text style={styles.title}>Driver Dashboard</Text>
           <Text style={styles.welcomeText}>Welcome, {driverName}!</Text>
         </View>
-        <TouchableOpacity 
+        <TouchableOpacity
           style={styles.refreshButton}
           onPress={async () => {
             console.log('🔄 [DRIVER HOME] Manual refresh triggered');
             setLoading(true);
-            
+
             // Force refresh from Firebase
             const user = getCurrentUser();
             if (user) {
@@ -554,10 +638,10 @@ export default function DriverHomeScreen() {
                   setSelectedRoute(freshData.currentRoute);
                   setVehicleNo(freshData.vehicleNo || '');
                   setJustSelectedRoute(false); // Clear the indicator
-                  
+
                   const shouldShowInput = !freshData.vehicleNo && !freshData.isOnShift;
                   setShowVehicleInput(shouldShowInput);
-                  
+
                   Alert.alert('✅ Refreshed', 'Data refreshed from server');
                 }
               } catch (error) {
@@ -571,7 +655,7 @@ export default function DriverHomeScreen() {
           <Text style={styles.refreshText}>🔄</Text>
         </TouchableOpacity>
       </View>
-      
+
       <View style={styles.statusCard}>
         <Truck size={48} color={isOnShift ? '#34C759' : '#FF9500'} />
         <Text style={styles.statusText}>
@@ -595,12 +679,12 @@ export default function DriverHomeScreen() {
         {!selectedRoute && !isOnShift && (
           <Text style={styles.warningText}>⚠️ Please select a route first</Text>
         )}
-        
+
         {/* Vehicle Number Section - Always show when not on shift */}
         {!isOnShift && (
           <View style={styles.vehicleSection}>
             <Text style={styles.vehicleSectionTitle}>Vehicle Information</Text>
-            
+
             {showVehicleInput ? (
               <View style={styles.vehicleInputContainer}>
                 <TextInput
@@ -618,11 +702,8 @@ export default function DriverHomeScreen() {
                       try {
                         const user = getCurrentUser();
                         if (user) {
-                          const { ref, update } = await import('firebase/database');
-                          const { database } = await import('@/services/firebase');
-                          const driverRef = ref(database, `drivers/${user.uid}`);
-                          await update(driverRef, { vehicleNo: vehicleNo.trim() });
-                          console.log('✅ Vehicle number saved to Firebase');
+                          await updateDriverVehicleNumber(user.uid, vehicleNo.trim());
+                          console.log('✅ Vehicle number saved to backend');
                         }
                         setShowVehicleInput(false);
                       } catch (error) {
@@ -660,14 +741,14 @@ export default function DriverHomeScreen() {
             )}
           </View>
         )}
-        
+
         {/* Show vehicle info when on shift */}
         {isOnShift && vehicleNo && (
           <Text style={styles.vehicleText}>Vehicle: {vehicleNo}</Text>
         )}
         <TouchableOpacity
           style={[
-            styles.shiftButton, 
+            styles.shiftButton,
             isOnShift && styles.endShiftButton,
             shiftLoading && styles.buttonDisabled
           ]}
