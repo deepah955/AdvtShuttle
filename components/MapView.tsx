@@ -29,11 +29,10 @@ export default function MapView({ shuttles, userLat, userLon }: MapViewProps) {
   const bottomSheetY = useRef(new Animated.Value(height)).current;
 
   // Load bus.png from assets and convert to data URL for map markers
+  // Load once on mount, not dependent on shuttles
   useEffect(() => {
     const loadBusIcon = async () => {
       try {
-        let busIconUrl: string;
-        
         if (Platform.OS === 'web') {
           // For web: Get the image URL from require
           const imageSource = Image.resolveAssetSource(busImage);
@@ -46,21 +45,18 @@ export default function MapView({ shuttles, userLat, userLon }: MapViewProps) {
               
               reader.onloadend = () => {
                 const dataUrl = reader.result as string;
-                const icons: Record<string, string> = {};
-                const uniqueRoutes = [...new Set(shuttles.map(s => s.routeId))];
-                
-                // Use the same bus icon for all routes (from bus.png)
-                for (const routeId of uniqueRoutes) {
-                  icons[routeId] = dataUrl;
-                }
+                // Pre-load for both routes
+                const icons: Record<string, string> = {
+                  'lh-prp': dataUrl,
+                  'mh': dataUrl
+                };
                 
                 setBusIcons(icons);
-                console.log('✅ [MAP] Bus icon loaded from bus.png for routes:', uniqueRoutes);
+                console.log('✅ [MAP] Bus icon loaded from bus.png for all routes');
               };
               
               reader.onerror = () => {
                 console.warn('⚠️ [MAP] Failed to convert bus.png to data URL, using SVG fallback');
-                // Fallback to SVG
                 generateSVGIcons();
               };
               
@@ -77,16 +73,14 @@ export default function MapView({ shuttles, userLat, userLon }: MapViewProps) {
           // For native: Use Image.resolveAssetSource
           const imageSource = Image.resolveAssetSource(busImage);
           if (imageSource?.uri) {
-            const icons: Record<string, string> = {};
-            const uniqueRoutes = [...new Set(shuttles.map(s => s.routeId))];
-            
-            // Use the same bus icon for all routes (from bus.png)
-            for (const routeId of uniqueRoutes) {
-              icons[routeId] = imageSource.uri;
-            }
+            // Pre-load for both routes
+            const icons: Record<string, string> = {
+              'lh-prp': imageSource.uri,
+              'mh': imageSource.uri
+            };
             
             setBusIcons(icons);
-            console.log('✅ [MAP] Bus icon loaded from bus.png for routes:', uniqueRoutes);
+            console.log('✅ [MAP] Bus icon loaded from bus.png for all routes');
           } else {
             console.warn('⚠️ [MAP] Could not resolve bus.png asset, using SVG fallback');
             generateSVGIcons();
@@ -99,11 +93,12 @@ export default function MapView({ shuttles, userLat, userLon }: MapViewProps) {
     };
 
     const generateSVGIcons = () => {
+      // Pre-generate for both routes
       const icons: Record<string, string> = {};
-      const uniqueRoutes = [...new Set(shuttles.map(s => s.routeId))];
+      const routes = ['lh-prp', 'mh'];
 
       // Fallback: Create enhanced SVG bus icons for each route
-      for (const routeId of uniqueRoutes) {
+      for (const routeId of routes) {
         const color = routeId === 'lh-prp' ? '#007AFF' : '#FF9500';
 
         // Enhanced bus SVG with better visibility
@@ -136,11 +131,11 @@ export default function MapView({ shuttles, userLat, userLon }: MapViewProps) {
       }
 
       setBusIcons(icons);
-      console.log('✅ [MAP] SVG bus icons generated as fallback for routes:', uniqueRoutes);
+      console.log('✅ [MAP] SVG bus icons generated as fallback for all routes');
     };
 
     loadBusIcon();
-  }, [shuttles]);
+  }, []); // Load once on mount, not dependent on shuttles
 
   useEffect(() => {
     if (selectedShuttle) {
@@ -157,14 +152,55 @@ export default function MapView({ shuttles, userLat, userLon }: MapViewProps) {
   }, [selectedShuttle, bottomSheetY]);
 
   useEffect(() => {
+    // Only update markers if we have shuttles
+    if (shuttles.length === 0) {
+      console.log('📍 [MAP] No shuttles to display');
+      return;
+    }
+
     const updateMarkers = () => {
       console.log(`📍 [MAP] Updating markers - ${shuttles.length} shuttles, busIcons loaded: ${Object.keys(busIcons).length}`);
 
       const markersData = JSON.stringify({
         user: { lat: userLat, lon: userLon },
         shuttles: shuttles.map(s => {
-          const icon = busIcons[s.routeId];
-          console.log(`🚌 [MAP] Shuttle ${s.id} (${s.routeId}): lat=${s.lat}, lon=${s.lon}, vehicle=${s.vehicleNo}, icon=${icon ? 'loaded' : 'missing'}`);
+          // Get icon for this route, or generate SVG fallback immediately
+          let icon = busIcons[s.routeId];
+          
+          // If no icon loaded yet, generate SVG fallback immediately
+          if (!icon) {
+            const color = s.routeId === 'lh-prp' ? '#007AFF' : '#FF9500';
+            icon = 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(
+              `<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+                <defs>
+                  <filter id="shadow-${s.routeId}" x="-50%" y="-50%" width="200%" height="200%">
+                    <feGaussianBlur in="SourceAlpha" stdDeviation="2"/>
+                    <feOffset dx="0" dy="2" result="offsetblur"/>
+                    <feComponentTransfer>
+                      <feFuncA type="linear" slope="0.3"/>
+                    </feComponentTransfer>
+                    <feMerge>
+                      <feMergeNode/>
+                      <feMergeNode in="SourceGraphic"/>
+                    </feMerge>
+                  </filter>
+                </defs>
+                <circle cx="24" cy="24" r="20" fill="${color}" stroke="white" stroke-width="3" filter="url(#shadow-${s.routeId})"/>
+                <g transform="translate(12, 12) scale(1.2)">
+                  <path d="M3 6h14v1c0 .55-.45 1-1 1h-1c-.55 0-1-.45-1-1v-1H3zm0 2v6h14V8H3zm1 1h3v3H4V9zm5 0h3v3H9V9z" fill="white"/>
+                  <rect x="4" y="3" width="12" height="2" rx="1" fill="white"/>
+                  <circle cx="6" cy="15" r="1.5" fill="white"/>
+                  <circle cx="14" cy="15" r="1.5" fill="white"/>
+                </g>
+              </svg>`
+            );
+            console.log(`⚠️ [MAP] No bus icon for route ${s.routeId}, using SVG fallback`);
+          } else {
+            console.log(`✅ [MAP] Using bus icon for route ${s.routeId}`);
+          }
+
+          console.log(`🚌 [MAP] Shuttle ${s.id} (${s.routeId}): lat=${s.lat}, lon=${s.lon}, vehicle=${s.vehicleNo}, hasIcon=${!!icon}`);
+          
           return {
             id: s.id,
             lat: s.lat,
@@ -172,7 +208,7 @@ export default function MapView({ shuttles, userLat, userLon }: MapViewProps) {
             routeId: s.routeId,
             vehicleNo: s.vehicleNo,
             driverName: s.driverName,
-            busIcon: icon || undefined,
+            busIcon: icon, // Always provide an icon (either bus.png or SVG fallback)
           };
         }),
       });
@@ -180,10 +216,18 @@ export default function MapView({ shuttles, userLat, userLon }: MapViewProps) {
       if (Platform.OS === 'web') {
         const iframe = document.getElementById('map-iframe') as HTMLIFrameElement;
         if (iframe && iframe.contentWindow) {
-          console.log('📤 [MAP] Sending markers to iframe');
+          console.log('📤 [MAP] Sending markers to iframe with', shuttles.length, 'shuttles');
           iframe.contentWindow.postMessage({ type: 'updateMarkers', data: markersData }, '*');
         } else {
-          console.warn('⚠️ [MAP] Iframe not ready');
+          console.warn('⚠️ [MAP] Iframe not ready, will retry...');
+          // Retry after a short delay
+          setTimeout(() => {
+            const retryIframe = document.getElementById('map-iframe') as HTMLIFrameElement;
+            if (retryIframe && retryIframe.contentWindow) {
+              console.log('📤 [MAP] Retrying marker update');
+              retryIframe.contentWindow.postMessage({ type: 'updateMarkers', data: markersData }, '*');
+            }
+          }, 1000);
         }
       } else {
         if (mapContainerRef.current && mapContainerRef.current.injectJavaScript) {
@@ -193,11 +237,24 @@ export default function MapView({ shuttles, userLat, userLon }: MapViewProps) {
             true;
           `);
         } else {
-          console.warn('⚠️ [MAP] WebView not ready');
+          console.warn('⚠️ [MAP] WebView not ready, will retry...');
+          // Retry after a short delay
+          setTimeout(() => {
+            if (mapContainerRef.current && mapContainerRef.current.injectJavaScript) {
+              console.log('📤 [MAP] Retrying marker update');
+              mapContainerRef.current.injectJavaScript(`
+                updateMarkers(${markersData});
+                true;
+              `);
+            }
+          }, 1000);
         }
       }
     };
-    updateMarkers();
+    
+    // Small delay to ensure map is ready
+    const timeoutId = setTimeout(updateMarkers, 100);
+    return () => clearTimeout(timeoutId);
   }, [shuttles, userLat, userLon, busIcons]);
 
   useEffect(() => {
@@ -285,18 +342,25 @@ export default function MapView({ shuttles, userLat, userLon }: MapViewProps) {
             console.log('Map created successfully');
             
             map.on('load', function() {
-              console.log('Map load event fired');
-              updateMarkers({
-                user: { lat: ${userLat}, lon: ${userLon} },
-                shuttles: ${JSON.stringify(shuttles.map(s => ({
-    id: s.id,
-    lat: s.lat,
-    lon: s.lon,
-    routeId: s.routeId,
-    vehicleNo: s.vehicleNo,
-    busIcon: busIcons[s.routeId] || undefined,
-  })))}
-              });
+              console.log('✅ [MAP] Map load event fired, initializing markers');
+              // Initial load - markers will be updated via postMessage with proper icons
+              var initialShuttles = ${JSON.stringify(shuttles.map(s => ({
+                id: s.id,
+                lat: s.lat,
+                lon: s.lon,
+                routeId: s.routeId,
+                vehicleNo: s.vehicleNo,
+                driverName: s.driverName,
+                // Don't set busIcon here - it will be set by updateMarkers via postMessage
+              })))};
+              
+              console.log('📍 [MAP] Initial shuttles:', initialShuttles.length);
+              if (initialShuttles.length > 0) {
+                updateMarkers({
+                  user: { lat: ${userLat}, lon: ${userLon} },
+                  shuttles: initialShuttles
+                });
+              }
             });
           } catch (error) {
             console.error('Error initializing map:', error);
@@ -359,54 +423,82 @@ export default function MapView({ shuttles, userLat, userLon }: MapViewProps) {
           data.shuttles.forEach(function(shuttle) {
             var color = shuttle.routeId === 'lh-prp' ? '#007AFF' : '#FF9500';
             
-            // Determine icon URL
-            var iconUrl;
-            if (shuttle.busIcon) {
-              // If we have a bus icon from assets, use it
-              iconUrl = shuttle.busIcon;
-              console.log('🚌 Using bus.png icon for shuttle:', shuttle.id);
-            } else {
-              // Fallback to SVG icon with route color
+            // Determine icon URL - always use provided busIcon or generate SVG
+            var iconUrl = shuttle.busIcon;
+            
+            if (!iconUrl) {
+              // Fallback to SVG icon with route color if no busIcon provided
               iconUrl = 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(
-                '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40">' +
-                '<circle cx="20" cy="20" r="18" fill="' + color + '"/>' +
-                '<path d="M17 20H7V21C7 21.5523 6.55228 22 6 22H5C4.44772 22 4 21.5523 4 21V12L2.4453 11.2226C2.17514 11.0875 2 10.8148 2 10.5157V9C2 8.44772 2.44772 8 3 8H4V5C4 3.89543 4.89543 3 6 3H18C19.1046 3 20 3.89543 20 5V8H21C21.5523 8 22 8.44772 22 9V10.5157C22 10.8148 21.8249 11.0875 21.5547 11.2226L20 12V21C20 21.5523 19.5523 22 19 22H18C17.4477 22 17 21.5523 17 21V20ZM6 5V8H18V5H6ZM6 10V18H18V10H6ZM7 12H11V16H7V12ZM13 12H17V16H13V12Z" transform="translate(9, 9) scale(0.8)" fill="white"/>' +
+                '<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">' +
+                '<defs>' +
+                '<filter id="shadow-' + shuttle.routeId + '" x="-50%" y="-50%" width="200%" height="200%">' +
+                '<feGaussianBlur in="SourceAlpha" stdDeviation="2"/>' +
+                '<feOffset dx="0" dy="2" result="offsetblur"/>' +
+                '<feComponentTransfer>' +
+                '<feFuncA type="linear" slope="0.3"/>' +
+                '</feComponentTransfer>' +
+                '<feMerge>' +
+                '<feMergeNode/>' +
+                '<feMergeNode in="SourceGraphic"/>' +
+                '</feMerge>' +
+                '</filter>' +
+                '</defs>' +
+                '<circle cx="24" cy="24" r="20" fill="' + color + '" stroke="white" stroke-width="3" filter="url(#shadow-' + shuttle.routeId + ')"/>' +
+                '<g transform="translate(12, 12) scale(1.2)">' +
+                '<path d="M3 6h14v1c0 .55-.45 1-1 1h-1c-.55 0-1-.45-1-1v-1H3zm0 2v6h14V8H3zm1 1h3v3H4V9zm5 0h3v3H9V9z" fill="white"/>' +
+                '<rect x="4" y="3" width="12" height="2" rx="1" fill="white"/>' +
+                '<circle cx="6" cy="15" r="1.5" fill="white"/>' +
+                '<circle cx="14" cy="15" r="1.5" fill="white"/>' +
+                '</g>' +
                 '</svg>'
               );
-              console.log('⚠️ Using SVG fallback for shuttle:', shuttle.id);
+              console.log('⚠️ [MAP] Using SVG fallback for shuttle:', shuttle.id, 'route:', shuttle.routeId);
+            } else {
+              console.log('✅ [MAP] Using bus icon for shuttle:', shuttle.id, 'route:', shuttle.routeId);
             }
             
             if (shuttleMarkers[shuttle.id]) {
-              // Update existing marker position
-              console.log('🔄 Updating position for shuttle:', shuttle.id, 'to', shuttle.lat, shuttle.lon);
+              // Update existing marker position and icon if changed
+              console.log('🔄 [MAP] Updating position for shuttle:', shuttle.id, 'to', shuttle.lat, shuttle.lon);
               shuttleMarkers[shuttle.id].setPosition({lat: shuttle.lat, lng: shuttle.lon});
+              // Also update icon in case it changed
+              try {
+                shuttleMarkers[shuttle.id].setIcon(iconUrl);
+              } catch (e) {
+                console.warn('⚠️ [MAP] Could not update icon for marker:', e);
+              }
             } else {
               // Create new marker
-              console.log('✨ Creating new marker for shuttle:', shuttle.id, 'at', shuttle.lat, shuttle.lon);
-              var marker = new MapmyIndia.Marker({
-                map: map,
-                position: {lat: shuttle.lat, lng: shuttle.lon},
-                fitbounds: false,
-                icon: iconUrl,
-                title: shuttle.vehicleNo || shuttle.driverName || 'Shuttle'
-              });
-              
-              marker.addListener('click', function() {
-                console.log('🖱️ Shuttle clicked:', shuttle.id);
-                if (window.ReactNativeWebView) {
-                  window.ReactNativeWebView.postMessage(JSON.stringify({
-                    type: 'shuttleClick',
-                    shuttleId: shuttle.id
-                  }));
-                } else {
-                  window.parent.postMessage({
-                    type: 'shuttleClick',
-                    shuttleId: shuttle.id
-                  }, '*');
-                }
-              });
-              
-              shuttleMarkers[shuttle.id] = marker;
+              console.log('✨ [MAP] Creating new marker for shuttle:', shuttle.id, 'at', shuttle.lat, shuttle.lon, 'with icon:', iconUrl ? 'yes' : 'no');
+              try {
+                var marker = new MapmyIndia.Marker({
+                  map: map,
+                  position: {lat: shuttle.lat, lng: shuttle.lon},
+                  fitbounds: false,
+                  icon: iconUrl,
+                  title: (shuttle.vehicleNo || shuttle.driverName || 'Shuttle') + ' - ' + (shuttle.routeId === 'lh-prp' ? 'LH/PRP Route' : 'MH Route')
+                });
+                
+                marker.addListener('click', function() {
+                  console.log('🖱️ [MAP] Shuttle clicked:', shuttle.id);
+                  if (window.ReactNativeWebView) {
+                    window.ReactNativeWebView.postMessage(JSON.stringify({
+                      type: 'shuttleClick',
+                      shuttleId: shuttle.id
+                    }));
+                  } else {
+                    window.parent.postMessage({
+                      type: 'shuttleClick',
+                      shuttleId: shuttle.id
+                    }, '*');
+                  }
+                });
+                
+                shuttleMarkers[shuttle.id] = marker;
+                console.log('✅ [MAP] Marker created successfully for shuttle:', shuttle.id);
+              } catch (markerError) {
+                console.error('❌ [MAP] Error creating marker for shuttle:', shuttle.id, markerError);
+              }
             }
           });
           
